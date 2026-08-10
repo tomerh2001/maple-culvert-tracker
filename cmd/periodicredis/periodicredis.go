@@ -9,9 +9,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/slazurin/maple-culvert-tracker/internal/api/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
 var s *discordgo.Session
@@ -31,7 +31,7 @@ func main() {
 	defer s.Close()
 	go func() {
 		for {
-			result, err := helpers.FetchMembers(os.Getenv(data.EnvVarDiscordGuildID), s)
+			result, err := helpers.FetchAllMembers(s)
 			if err != nil {
 				log.Println("Failed to fetch members periodically")
 			} else {

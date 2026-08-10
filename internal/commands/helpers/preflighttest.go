@@ -4,8 +4,8 @@ import (
 	"context"
 	"log"
 
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func PreflightTest() {

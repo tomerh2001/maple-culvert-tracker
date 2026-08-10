@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func personalBests(s *discordgo.Session, i *discordgo.InteractionCreate) {

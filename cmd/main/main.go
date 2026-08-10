@@ -7,9 +7,9 @@ import (
 	"syscall"
 
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/slazurin/maple-culvert-tracker/internal/api"
-	"github.com/slazurin/maple-culvert-tracker/internal/commands"
-	"github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/api"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
 func main() {

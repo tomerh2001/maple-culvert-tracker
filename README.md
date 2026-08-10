@@ -1,91 +1,64 @@
 # Maple Culvert Tracker
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/G2G0WUCP2)
+A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian Culvert** scores — with built-in screenshot OCR, one-message-per-week announcements, and everything driven by slash commands.
 
-This software helps track Maplestory culvert scores over time!
+> This is [tomerh2001](https://github.com/tomerh2001)'s fork of [SLAzurin/maple-culvert-tracker](https://github.com/SLAzurin/maple-culvert-tracker).
+> Full credit to **Azuri** (SLAzurin) for the original bot, the OCR font data, and the chartmaker.
+> The fork removes the web admin panel and reworks the command surface; see below.
 
-This software is best used in conjunction with my https://github.com/SLAzurin/gpq-image-ocr-gui
+## What it does
 
-Join the Discord server for update notifications! Here: Server under construction.
+- **Screenshot → scores in one step**: post a screenshot of the in-game *Guild → Member Participation Status* window (full window is fine), right click it → Apps → **Submit Scores**. The bot OCRs the table (no cropping needed, 1x/2x scale supported) and records everyone's weekly score.
+- **One announcement per week, no spam**: in a designated channel the bot keeps a single message per culvert week with the full ranked table (edited in place on every submission), plus a thread with submission notes and personal-best shoutouts that @mention the member. Nothing else is ever posted, and only if a channel is configured.
+- **Members self-serve**: `/register` links a character to a Discord account, `/culvert` charts progression (yours, `user:@someone`, or any `character-name:`), right click a member → Apps → **Culvert** works too.
+- **Configurable permissions**: admins choose which roles/users may submit scores, and can optionally allow members to `/report-score` their own runs.
+- **Multi-server shared database**: one deployment can serve several Discord servers over the same data (env-only config, see `DISCORD_EXTRA_GUILD_IDS`).
 
-A lot of work still needs to be done to be considered a well established Open Source Software.  
-You should consider this codebase as Public Source instead.  
+## Commands
 
-Anyone is welcome to contribute by opening new issues and/or open PRs.  
-Please open issues to ask questions and open PRs for any code changes.  
+| Command | Who | What |
+|---|---|---|
+| `/help` | everyone | User guide |
+| `/register` | everyone | Link your own character |
+| `/culvert` | everyone | Progression chart (self, `user:@x`, or `character-name:`) |
+| `/leaderboard` | everyone | Weekly ranked table, or guild-wide chart with `chart:True` |
+| `/personal-bests` | everyone | Best score per character |
+| `/list-characters` | everyone | Tracked roster |
+| `/report-score` | everyone | Self-report this week's score (admin-toggled) |
+| `/submit-scores` | submitters | Submit from a scores file or a message link (OCR) |
+| `/parse-images` | submitters | OCR screenshots to a scores file without submitting |
+| `/track-character`, `/untrack-character`, `/rename-character`, `/set-score` | submitters | Roster & score management |
+| `/config` | admins | View/change all bot settings |
+| `/setup` | admins | Admin setup guide |
+| Right click message → Apps → **Parse Images** / **Submit Scores** | submitters | The fastest weekly flow |
+| Right click member → Apps → **Culvert** | everyone | Their chart |
 
-## This Culvert Tracker is used by these lovely guilds:  
-- Straw (Kronos)
-- Bloom (Kronos)
-- Beary (Kronos)
-- Thrones (Kronos)
+## Deployment
 
-# Pre-requisites
+Images are published by CI to `ghcr.io/tomerh2001/maple-culvert-tracker/{bot,chartmaker,periodicredis,cron}:latest` on every push to `master`.
 
-Install Docker Engine (Linux) or Docker Desktop (Linux/Windows/Mac) for development.  
-Install Golang 1.25.x or newer versions when developing.  
-Install [NodeJS](https://nodejs.org/en/download) 26.x or newer.
+1. Create a Discord application, add a bot, enable the **Server Members** intent, and invite it with permissions `137439267840` (scopes `bot applications.commands`).
+2. Copy `.env.template` to `.env` and fill it in (`DISCORD_TOKEN`, `DISCORD_GUILD_ID`, postgres/redis credentials, ...).
+3. `docker compose up -d` — the bot runs its own DB migrations on boot.
+4. In Discord: `/setup` walks you through roles, the weekly channel, and the first submission.
 
-## Deployment note
+### Environment variables of note
 
-Although discouraged, hosting this at home is possible.  
-Hosting this on the Cloud is recommended to keep stable uptime.
+- `DISCORD_GUILD_ID` — the primary Discord server.
+- `DISCORD_EXTRA_GUILD_IDS` — optional comma-separated additional server ids sharing the same database (commands work everywhere; announcements post to the one configured channel). Deliberately env-only: this cannot be changed from Discord.
+- `JWT_SECRET` — internal API auth between the bot and itself; set it to anything long and random.
 
-I suggest the following providers for competitive pricing:
+## Development
 
-- [Hetzner](https://www.hetzner.com/cloud/)
-- [OVH Cloud](https://www.ovhcloud.com/en/vps/)
+Go 1.25+; `go test ./...` runs the OCR suite against real fixture screenshots in `provided/gpq-tests`. The `chartmaker/` service (Node) renders the charts. DB schema lives in `db_migrations/` (golang-migrate, run automatically).
 
-Requirements are relatively low spec. I'd suggest a minimum of 1cpu, 1gb of ram and 40gb of storage.
+## Differences from upstream
 
-# developer setup notes
+- Web admin panel, `/login`, and the JWT web auth are **removed** — `/config` and the other slash commands cover everything.
+- OCR accepts full Guild-window screenshots (header-anchored table detection) instead of pre-cropped images only.
+- Weekly announcement message + thread instead of per-submission channel messages; no reminder/monthly-report crons; no sandbagger imagery.
+- Duel/sandbagger/rat/participation novelty commands removed; `culvert-anyone`, `culvert-summary`, `culvert-mega-chart`, and `submit-scores-from-attachment` were consolidated into `/culvert`, `/leaderboard`, and `/submit-scores`.
 
-1. Setup the discord bot and their permissions and make it join your test server.
-2. Setup the `.env` file according to `.env.template`.
-3. Run the `chartmaker`, `db16`, `valkey` containers.
-   - Command: `docker compose -f base.yml -f dev.yml up -d chartmaker db16 valkey`
-   - Connect inside the db16 container: `docker compose exec db16 sh`
-   - Run the sql files: `psql -U $POSTGRES_USER -d $POSTGRES_DB </root/sqlfiles/createdb.sql`
-4. Run the `main` Go app (discord bot) process and leave it running in the background.
-   - Command: `go run cmd/main/*.go`
-5. Install NodeJS dependencies:
-   - Enable `pnpm`: `npm i -g corepack && corepack prepare --activate`
-   - Install dependencies: `pnpm i`
-6. Run the Website control panel and leave it in the background.
-   - Command: `cd culvert-web ; pnpm run dev`
+## License
 
-# Developer codebase notes
-Internally used discord id `1` means unlinked and not in guild anymore  
-Internally used discord id `2` means unlinked but still in guild  
-
-I never delete characters in case they ever return to the guild. This has happened before and their culvert scores will be kept.  
-
-This culvert bot project started on April 11th 2023! :D
-
-# production deployment
-
-1. Setup the discord bot and their permissions and make it join your server.
-2. Setup the `.env` file according to `.env.template`.
-3. Use docker compose, and run the following command:
-   - Command: `docker compose up -d`
-   - Connect inside the db16 container: `docker compose exec db16 sh`
-   - Run the sql files: `psql -U $POSTGRES_USER -d $POSTGRES_DB </root/sqlfiles/createdb.sql`
-
-# backing up the postgres db
-
-1. Connect to the db container with a shell and run a pg_dump
-   - Run: `docker compose exec db16 sh -c "pg_dump -U \$POSTGRES_USER -d \$POSTGRES_DB >/root/sqlfiles/dump.sql"`
-   - The `dump.sql` is the database dump file (inside the `./sqlfiles/` path)
-   - Backup that file "somewhere".
-
-# restoring a db backup
-
-1. Copy the dump inside the container then connect into it and run the sql file.
-   - Copy the `dump.sql` inside the `./sqlfiles/` path.
-   - Run: `docker compose exec db16 sh`
-   - Run: `psql -U $POSTGRES_USER -d postgres`
-   - Drop and re-create $POSTGRES_DB: `drop database mapleculverttrackerdb; create database mapleculverttrackerdb;` then `exit` the db connection
-   - Run the sql backup: `psql -U $POSTGRES_USER -d $POSTGRES_DB </root/sqlfiles/dump.sql`
-   - You are done restoring the backup.
-
-
+MIT, same as upstream. Original work © Azuri (SLAzurin).

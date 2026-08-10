@@ -12,10 +12,10 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	. "github.com/go-jet/jet/v2/postgres"
-	. "github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
-	cmdhelpers "github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func culvertMegaChart(s *discordgo.Session, i *discordgo.InteractionCreate) {

@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/slazurin/maple-culvert-tracker/internal/api/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	cmdhelpers "github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -26,10 +26,17 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	weeks := int64(8)
 	yAxisStartAt0 := false
 
-	options := i.ApplicationCommandData().Options
+	cmdData := i.ApplicationCommandData()
+	targetUserID := i.Member.User.ID
+	options := cmdData.Options
 	for _, v := range options {
 		if v.Name == "character-name" {
 			charName = strings.ToLower(v.StringValue())
+		}
+		if v.Name == "user" {
+			if u := v.UserValue(nil); u != nil {
+				targetUserID = u.ID
+			}
 		}
 		if v.Name == "date" {
 			date = v.StringValue()
@@ -41,6 +48,11 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			yAxisStartAt0 = v.BoolValue()
 		}
 	}
+	if cmdData.Name == "Culvert" && cmdData.TargetID != "" {
+		// User context menu: right click a member -> Apps -> Culvert.
+		targetUserID = cmdData.TargetID
+	}
+	isSelf := targetUserID == i.Member.User.ID
 
 	// Validate date format
 	if date != "" {
@@ -58,9 +70,11 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		date = cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)
 	}
 
-	// Command name = culvert
+	// Default: the caller's (or targeted user's) own characters. When a
+	// character name is given, search every tracked character instead.
 	sql := `SELECT id, maple_character_name FROM characters WHERE characters.discord_user_id = $1 ORDER BY id`
-	if i.ApplicationCommandData().Name == "culvert-anyone" {
+	byName := charName != "" && targetUserID == i.Member.User.ID && cmdData.Name != "Culvert"
+	if byName {
 		sql = `SELECT id, maple_character_name FROM characters WHERE characters.discord_user_id != '1' ORDER BY maple_character_name`
 	}
 
@@ -72,7 +86,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	args := []any{}
 	if strings.Contains(sql, "$1") {
-		args = append(args, i.Member.User.ID)
+		args = append(args, targetUserID)
 	}
 	rows, err := stmt.Query(args...)
 	if err != nil {
@@ -112,7 +126,28 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	rows.Close()
 	stmt.Close()
 
+	if count == 0 && !byName {
+		// No registered character: explain what to do in plain words.
+		msg := "**<@" + targetUserID + ">** hasn't registered a MapleStory character yet.\n" +
+			"They can link one by typing `/register` and entering their character name - after that this command will work."
+		if isSelf {
+			msg = "You haven't registered a MapleStory character yet!\n" +
+				"Type `/register` and enter your character name (for example `/register character-name:HTomer`), then try again."
+		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: msg,
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
 	choicesMsg := "Available characters:"
+	if !isSelf && !byName {
+		choicesMsg = "<@" + targetUserID + "> has multiple characters. Pick one with `/culvert user:@them character-name:<name>`. Available characters:"
+	}
 
 	if _, ok := characters[charName]; count == 0 || (count > 1 && charName == "") || (!ok && charName != "") {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

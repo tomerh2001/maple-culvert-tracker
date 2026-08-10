@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/model"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/model"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 	"github.com/valkey-io/valkey-go"
 )
 

@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
 func EnvVarsTest() {

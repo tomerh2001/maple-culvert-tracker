@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
 type tconfig struct {

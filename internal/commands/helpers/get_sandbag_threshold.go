@@ -3,7 +3,7 @@ package helpers
 import (
 	"strconv"
 
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/valkey-io/valkey-go"
 )
 

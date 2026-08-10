@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 
 	. "github.com/go-jet/jet/v2/postgres"
-	. "github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
 
-	"github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/model"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/model"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 	redis "github.com/valkey-io/valkey-go"
 )
 

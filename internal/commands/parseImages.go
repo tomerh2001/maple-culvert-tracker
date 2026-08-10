@@ -13,9 +13,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -29,45 +29,27 @@ func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: content})
 	}
 
-	channelID := ""
-	messageIDs := []string{}
+	messageLink := ""
 	for _, v := range i.ApplicationCommandData().Options {
-		if v.Name == "channel-id" {
-			channelID = parseChannelID(v.StringValue())
-		}
-		if strings.HasPrefix(v.Name, "message-id") {
-			id := strings.TrimSpace(v.StringValue())
-			if id != "" {
-				messageIDs = append(messageIDs, id)
-			}
+		if v.Name == "message-link" {
+			messageLink = v.StringValue()
 		}
 	}
-	if channelID == "" {
-		editContent("No channel ID provided.")
-		return
-	}
-	if len(messageIDs) == 0 {
-		editContent("No message IDs provided.")
+	channelID, messageID, ok := parseMessageLink(messageLink)
+	if !ok {
+		editContent("That doesn't look like a message link. Right click a message -> Copy Message Link and paste it here.\nTip: you can also just right click the message -> Apps -> **Parse Images**.")
 		return
 	}
 
-	// Collect image attachments from the referenced messages (kept in memory only).
-	imageURLs := []string{}
-	for _, msgID := range messageIDs {
-		msg, err := s.ChannelMessage(channelID, msgID)
-		if err != nil {
-			log.Println("parseImages: failed to fetch message", msgID, "in channel", channelID, err)
-			editContent("Failed to fetch message `" + msgID + "`. Make sure the message and channel IDs are correct.")
-			return
-		}
-		for _, a := range msg.Attachments {
-			if isImageAttachment(a) {
-				imageURLs = append(imageURLs, a.URL)
-			}
-		}
+	msg, err := s.ChannelMessage(channelID, messageID)
+	if err != nil {
+		log.Println("parseImages: failed to fetch message", messageID, "in channel", channelID, err)
+		editContent("Failed to fetch that message. Make sure the link is from this server and I can see the channel.")
+		return
 	}
+	imageURLs := collectImageURLs(msg)
 	if len(imageURLs) == 0 {
-		editContent("No image attachments found on the provided message(s).")
+		editContent("No image attachments found on the linked message.")
 		return
 	}
 
@@ -114,7 +96,7 @@ func ocrImagesToScores(imageURLs []string) (merged []helpers.ScoreEntry, unmatch
 				results[idx] = imgResult{err: err}
 				return
 			}
-			scores, err := helpers.ParseSmallImage(data, memberNames, font)
+			scores, err := helpers.ParseParticipationImage(data, memberNames, font)
 			results[idx] = imgResult{scores: scores, err: err}
 		}(idx, url)
 	}
@@ -252,15 +234,6 @@ func marshalOrderedScores(entries []helpers.ScoreEntry) ([]byte, error) {
 	}
 	b.WriteByte('}')
 	return []byte(b.String()), nil
-}
-
-// parseChannelID accepts either a raw ID ("123") or a channel mention
-// ("<#123>") and returns the bare ID.
-func parseChannelID(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "<#")
-	s = strings.TrimSuffix(s, ">")
-	return strings.TrimSpace(s)
 }
 
 func isImageAttachment(a *discordgo.MessageAttachment) bool {

@@ -1,6 +1,5 @@
 packages:
   - chartmaker
-  - culvert-web
 
 allowBuilds:
   esbuild: true

@@ -7,10 +7,10 @@ import (
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
-	apihelpers "github.com/slazurin/maple-culvert-tracker/internal/api/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	apihelpers "github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func main() {

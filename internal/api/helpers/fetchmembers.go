@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
 func FetchMembers(discordServerID string, DiscordSession *discordgo.Session) ([]data.WebGuildMember, error) {
@@ -66,4 +66,31 @@ func FetchMembers(discordServerID string, DiscordSession *discordgo.Session) ([]
 	})
 
 	return result, nil
+}
+
+// FetchAllMembers merges FetchMembers across every served guild, deduplicated
+// by Discord user id.
+func FetchAllMembers(DiscordSession *discordgo.Session) ([]data.WebGuildMember, error) {
+	seen := map[string]bool{}
+	out := []data.WebGuildMember{}
+	var lastErr error
+	fetchedAny := false
+	for _, guildID := range data.AllGuildIDs() {
+		members, err := FetchMembers(guildID, DiscordSession)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		fetchedAny = true
+		for _, m := range members {
+			if !seen[m.DiscordUserID] {
+				seen[m.DiscordUserID] = true
+				out = append(out, m)
+			}
+		}
+	}
+	if !fetchedAny {
+		return out, lastErr
+	}
+	return out, nil
 }

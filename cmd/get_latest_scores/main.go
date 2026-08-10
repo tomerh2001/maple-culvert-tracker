@@ -8,10 +8,10 @@ import (
 
 	. "github.com/go-jet/jet/v2/postgres"
 	_ "github.com/joho/godotenv/autoload"
-	. "github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
-	"github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func main() {

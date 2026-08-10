@@ -19,18 +19,6 @@ COPY cmd/${APPNAME} /src/cmd/${APPNAME}
 RUN --mount=type=cache,target=/root/.cache/go-build \
     cd /src/cmd/${APPNAME} && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /src/main .
 
-# culvert-web specific
-FROM --platform=$BUILDPLATFORM node:26.1.0-alpine AS culvert-web-builder
-ENV NODE_ENV=dev
-WORKDIR /app
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-COPY culvert-web/package.json culvert-web/
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    npm i -g corepack@0.34.7 && corepack enable && corepack prepare --activate && pnpm i --filter maple-culvert-tracker --filter culvert-web --frozen-lockfile
-COPY culvert-web/index.html culvert-web/tsconfig.json culvert-web/tsconfig.node.json culvert-web/tsconfig.app.json culvert-web/vite.config.ts culvert-web/
-COPY culvert-web/src culvert-web/src/
-RUN pnpm run --filter culvert-web build
-
 FROM scratch AS final
 
 COPY --from=build /src/main /
@@ -45,26 +33,8 @@ USER nobody
 
 ENTRYPOINT [ "/main" ]
 
-FROM final AS culvert-web-final
-COPY --from=culvert-web-builder /app/culvert-web/build /www/
-
-ENTRYPOINT [ "/main" ]
-
-FROM build AS cron-specific-build
-ARG TARGETOS
-ARG TARGETARCH
-# main arg already built auto_backup
-COPY cmd/culvert_score_update_reminder /src/cmd/culvert_score_update_reminder
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    cd /src/cmd/culvert_score_update_reminder && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /src/culvert_score_update_reminder .
-COPY cmd/culvert_score_monthly_improvements /src/cmd/culvert_score_monthly_improvements
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    cd /src/cmd/culvert_score_monthly_improvements && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /src/culvert_score_monthly_improvements .
-
 FROM postgres:16-alpine AS cron
 COPY --from=build /src/main /usr/local/bin/auto_backup
-COPY --from=cron-specific-build /src/culvert_score_update_reminder /usr/local/bin/
-COPY --from=cron-specific-build /src/culvert_score_monthly_improvements /usr/local/bin/
 COPY ./cron.d/root /etc/cron/
 
 FROM final AS final-with-server-assets

@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 	redis "github.com/valkey-io/valkey-go"
 )
 

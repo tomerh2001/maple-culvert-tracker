@@ -7,12 +7,12 @@ import (
 	"log"
 	"time"
 
-	cmdhelpers "github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 	"github.com/valkey-io/valkey-go"
 
 	. "github.com/go-jet/jet/v2/postgres"
-	. "github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
 )
 
 func ExportCharactersData(db *sql.DB, vk *valkey.Client, weeks int, asOf time.Time) ([]struct {

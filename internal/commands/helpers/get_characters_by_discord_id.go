@@ -5,9 +5,9 @@ import (
 	"database/sql"
 
 	. "github.com/go-jet/jet/v2/postgres"
-	. "github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
 
-	"github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/model"
+	"github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/model"
 )
 
 func GetCharactersByDiscordID(db *sql.DB, discordID string) (*[]model.Characters, error) {

@@ -8,6 +8,7 @@ type HumanReadableDescriptions struct {
 var confReadableNameAndDescriptions = map[redisInternalKey]HumanReadableDescriptions{
 	CONF_DISCORD_ADMIN_CHANNEL_ID:                {"Discord Admin Channel ID", "REQUIRED The ID of the channel where the bot will send admin notifications"},
 	CONF_DISCORD_MEMBERS_MAIN_CHANNEL_ID:         {"Discord Members Main Channel ID", "REQUIRED The ID of the channel where the bot will interact with guild members"},
+	CONF_DISCORD_WEEKLY_CHANNEL_ID:               {"Discord Weekly Announcement Channel ID", "Channel for the one-message-per-week culvert table + its thread. Empty disables all announcements"},
 	CONF_DISCORD_GUILD_ROLE_IDS:                  {"Discord Guild Role IDs", "REQUIRED The IDs of guild members. Comma separated"},
 	OPTIONAL_CONF_DISCORD_REMINDER_SUFFIX:        {"Optional Discord Reminder Suffix", "Optional fluff suffix on the daily reminder message"},
 	OPTIONAL_CONF_MAPLE_REGION:                   {"Optional Maple Region", "Optional region of the server. Must be 'na' or 'eu', empty defaults to 'na'"},
@@ -16,6 +17,9 @@ var confReadableNameAndDescriptions = map[redisInternalKey]HumanReadableDescript
 	OPTIONAL_CONF_SUBMIT_SCORES_SHOW_RATS:        {"Optional Show rats after submitting scores", "Toggle 6/7 if the bot should show rats after submitting weekly scores"},
 	OPTIONAL_CONF_SANDBAG_THRESHOLD:              {"Optional sandbagger threshold", "Threshold which defines a sandbagger, against their previous best culvert score. (Default or empty: 0.7)"},
 	OPTIONAL_CONF_MONTHLY_IMPROVEMENT_THRESHOLD:  {"Optional monthly improvement threshold", "Minimum improvement percentage to be listed as a top improver in the monthly report. (Default or empty: 10)"},
+	CONF_DISCORD_SUBMIT_ROLE_IDS:                 {"Submitter Role IDs", "Roles allowed to submit/parse scores and manage character links. Admins always can. Comma separated"},
+	CONF_DISCORD_SUBMIT_USER_IDS:                 {"Submitter User IDs", "Discord user IDs allowed to submit/parse scores and manage character links. Admins always can. Comma separated"},
+	OPTIONAL_CONF_ALLOW_SELF_REPORT:              {"Allow self-reported scores", "Toggle whether members can report their own culvert score with /report-score"},
 }
 
 func GetHumanReadableDescriptions(k redisInternalKey) *HumanReadableDescriptions {

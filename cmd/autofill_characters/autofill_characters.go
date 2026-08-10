@@ -8,10 +8,10 @@ import (
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/slazurin/maple-culvert-tracker/internal/api/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 /*

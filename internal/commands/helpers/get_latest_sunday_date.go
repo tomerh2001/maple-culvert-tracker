@@ -7,7 +7,7 @@ import (
 	"time"
 
 	. "github.com/go-jet/jet/v2/postgres"
-	. "github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
 )
 
 func GetLatestResetDate(db *sql.DB) (time.Time, error) {

@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
 func FetchCharacterData(name string, region string) (*data.PlayerRank, error) {

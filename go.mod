@@ -1,4 +1,4 @@
-module github.com/slazurin/maple-culvert-tracker
+module github.com/tomerh2001/maple-culvert-tracker
 
 go 1.26.5
 

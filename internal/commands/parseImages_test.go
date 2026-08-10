@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slazurin/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
 func TestCollectUnmatchedScoresPreservesParsedOrderAndScores(t *testing.T) {

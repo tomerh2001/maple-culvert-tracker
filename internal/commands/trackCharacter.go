@@ -4,20 +4,22 @@ package commands
 
 import (
 	"errors"
-	"os"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	. "github.com/go-jet/jet/v2/postgres"
 	"github.com/go-jet/jet/v2/qrm"
-	. "github.com/slazurin/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
-	"github.com/slazurin/maple-culvert-tracker/internal/api/helpers"
-	"github.com/slazurin/maple-culvert-tracker/internal/apiredis"
-	"github.com/slazurin/maple-culvert-tracker/internal/data"
-	"github.com/slazurin/maple-culvert-tracker/internal/db"
+	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func trackCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !requireSubmitPermission(s, i) {
+		return
+	}
 
 	// Parse discord param character-name
 	discordUserID := "2"
@@ -55,7 +57,7 @@ func trackCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	// Validate discord user id
-	result, err := helpers.FetchMembers(os.Getenv(data.EnvVarDiscordGuildID), s)
+	result, err := helpers.FetchAllMembers(s)
 	if err != nil {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
