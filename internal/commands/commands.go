@@ -320,6 +320,18 @@ var Commands = []*discordgo.ApplicationCommand{
 		Name:        "setup",
 		Description: "ADMINS: How to set this bot up for your guild",
 	},
+	{
+		Name:        "reset",
+		Description: "ADMINS: Delete ALL tracked characters and scores, start from scratch",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "confirm",
+				Description: "Type DELETE EVERYTHING to confirm",
+			},
+		},
+	},
 	// ── Context menus (right click -> Apps) ─────────────────────────────────
 	{
 		Name: "Parse Images",

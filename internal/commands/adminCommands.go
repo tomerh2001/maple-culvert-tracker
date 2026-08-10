@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"strconv"
@@ -354,4 +355,36 @@ func setScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	go apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, []int64{charID})
 	registerReply(s, i, "Set `"+realName+"` to **"+apihelpers.FormatThousands(score)+"** for week "+weekStr+". :white_check_mark:")
+}
+
+// resetData wipes all tracked characters, scores and weekly announcement
+// records so the guild can start from scratch. Admin only, with a typed
+// confirmation. Settings (/config) are kept.
+func resetData(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !isAdmin(i) {
+		registerReply(s, i, "Only server admins can use `/reset`.")
+		return
+	}
+	confirm := ""
+	for _, v := range i.ApplicationCommandData().Options {
+		if v.Name == "confirm" {
+			confirm = strings.TrimSpace(v.StringValue())
+		}
+	}
+	if confirm != "DELETE EVERYTHING" {
+		registerReply(s, i, "This permanently deletes **all** tracked characters, **all** culvert scores, and the bot's weekly announcement records. Settings are kept.\nTo proceed, run `/reset confirm:DELETE EVERYTHING` (typed exactly).")
+		return
+	}
+
+	var chars, scores int64
+	db.DB.QueryRow(`SELECT COUNT(*) FROM characters`).Scan(&chars)
+	db.DB.QueryRow(`SELECT COUNT(*) FROM character_culvert_scores`).Scan(&scores)
+
+	if _, err := db.DB.Exec(`TRUNCATE character_culvert_scores, weekly_announcements, characters RESTART IDENTITY CASCADE`); err != nil {
+		log.Println("reset:", err)
+		registerReply(s, i, "Something went wrong wiping the data. Nothing may have been deleted; check the server logs.")
+		return
+	}
+
+	registerReply(s, i, fmt.Sprintf("Wiped **%d characters** and **%d scores**. The tracker is now a blank slate. :broom:\nOld weekly announcement messages in Discord are not deleted automatically - remove them manually if you want.\nStart fresh with `/register` / `/track-character` and your next screenshot submission.", chars, scores))
 }
