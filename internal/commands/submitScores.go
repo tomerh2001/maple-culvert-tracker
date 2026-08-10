@@ -5,6 +5,7 @@ package commands
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -312,7 +313,7 @@ func finalizeSubmitScores(s *discordgo.Session, i *discordgo.InteractionCreate, 
 	log.Println("submitScores: len(newMapIsNew.Payload)", len(newMapIsNew.Payload), "len(newMapIsNotNew.Payload)", len(newMapIsNotNew.Payload))
 	if newMapIsNewSuccess && newMapIsNotNewSuccess {
 		time.Sleep(2 * time.Second) // ensures we do not run in the discord throttling
-		*content = "Scores submitted successfully for culvert week of " + culvertDateStr + "."
+		*content = fmt.Sprintf("%d new scores have been submitted successfully for culvert week of %s.", len(newMapIsNew.Payload)+len(newMapIsNotNew.Payload), culvertDateStr)
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: content,
 		})

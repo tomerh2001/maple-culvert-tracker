@@ -25,7 +25,9 @@ That connects your MapleStory character to your Discord account.
 
 Scores are usually entered weekly by the guild's submitters from a screenshot of the in-game ranking - if your score is missing, poke them.
 
-*Admins: type ` + "`/setup`" + ` for the setup guide.*`
+*Admins: type ` + "`/setup`" + ` for the setup guide.*
+
+*Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
 const setupText = `## Culvert Tracker - admin setup guide
 
@@ -47,7 +49,9 @@ Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status*
 - Optional: ` + "`/config setting:Allow self-reported scores value:true`" + ` lets members ` + "`/report-score`" + ` their own runs
 
 **5. Housekeeping**
-` + "`/rename-character`" + ` after name changes, ` + "`/untrack-character`" + ` for leavers (history is kept), ` + "`/export-csv`" + ` for spreadsheets, ` + "`/config`" + ` to review all settings.`
+` + "`/rename-character`" + ` after name changes, ` + "`/untrack-character`" + ` for leavers (history is kept), ` + "`/export-csv`" + ` for spreadsheets, ` + "`/config`" + ` to review all settings.
+
+*Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
 func helpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	registerReply(s, i, helpText)
