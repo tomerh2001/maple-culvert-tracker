@@ -20,13 +20,19 @@ var Commands = []*discordgo.ApplicationCommand{
 	},
 	{
 		Name:        "register",
-		Description: "Link your own MapleStory character to your Discord account",
+		Description: "Link a MapleStory character to a Discord account (yours by default)",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Required:    true,
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "character-name",
-				Description: "Your in-game character name",
+				Description: "The in-game character name",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionUser,
+				Name:        "user",
+				Description: "Register for this member instead of yourself (submitters only)",
 			},
 			{
 				Required:    false,
@@ -177,30 +183,6 @@ var Commands = []*discordgo.ApplicationCommand{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "message-link",
 				Description: "Link to the message holding the screenshot(s)",
-			},
-		},
-	},
-	{
-		Name:        "track-character",
-		Description: "Track a character and link it to a member (admins/submitters)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    true,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "character-name",
-				Description: "Character name",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionUser,
-				Name:        "discord-user-id",
-				Description: "Discord member this character belongs to (default: untracked)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "skip-name-check",
-				Description: "Skip character name check with maple rankings",
 			},
 		},
 	},

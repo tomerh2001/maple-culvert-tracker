@@ -21,24 +21,35 @@ func registerReply(s *discordgo.Session, i *discordgo.InteractionCreate, msg str
 	})
 }
 
-// registerCharacter is the self-service version of track-character: it links
-// the caller's own MapleStory character to their Discord account.
+// registerCharacter links a MapleStory character to a Discord account:
+// your own by default, or someone else's via user:@member (submitters only).
 func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	characterName := ""
 	skipNameCheck := false
+	callerID := i.Member.User.ID
+	targetID := callerID
 	for _, v := range i.ApplicationCommandData().Options {
-		if v.Name == "character-name" {
+		switch v.Name {
+		case "character-name":
 			characterName = strings.TrimSpace(v.StringValue())
-		}
-		if v.Name == "skip-name-check" {
+		case "user":
+			if u := v.UserValue(nil); u != nil {
+				targetID = u.ID
+			}
+		case "skip-name-check":
 			skipNameCheck = v.BoolValue()
 		}
 	}
 	if characterName == "" {
-		registerReply(s, i, "Please provide your character name: `/register character-name:YourCharacter`")
+		registerReply(s, i, "Please provide the character name: `/register character-name:YourCharacter`")
 		return
 	}
-	callerID := i.Member.User.ID
+
+	forOther := targetID != callerID
+	if forOther && !canSubmitScores(i) {
+		registerReply(s, i, "Registering a character for someone else needs submitter permissions. They can register themselves with `/register character-name:TheirCharacter`.")
+		return
+	}
 
 	// Normalise capitalisation against the official rankings when possible.
 	if !skipNameCheck {
@@ -50,6 +61,11 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		characterName = charData.CharacterName
 	}
 
+	who := "you"
+	if forOther {
+		who = "<@" + targetID + ">"
+	}
+
 	var existingID int64
 	var existingOwner string
 	err := db.DB.QueryRow(
@@ -59,30 +75,35 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	case err == sql.ErrNoRows:
 		if _, err := db.DB.Exec(
 			`INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, $2)`,
-			characterName, callerID); err != nil {
+			characterName, targetID); err != nil {
 			log.Println("register: insert failed:", err)
-			registerReply(s, i, "Something went wrong saving your character. Please try again later.")
+			registerReply(s, i, "Something went wrong saving the character. Please try again later.")
 			return
 		}
 	case err != nil:
 		log.Println("register: lookup failed:", err)
-		registerReply(s, i, "Something went wrong saving your character. Please try again later.")
+		registerReply(s, i, "Something went wrong saving the character. Please try again later.")
 		return
-	case existingOwner == callerID:
-		registerReply(s, i, "`"+characterName+"` is already registered to you. You're all set - try `/culvert`!")
+	case existingOwner == targetID:
+		registerReply(s, i, "`"+characterName+"` is already registered to "+who+". Nothing to do!")
 		return
-	case existingOwner != "1" && existingOwner != "2" && existingOwner != "":
-		registerReply(s, i, "`"+characterName+"` is already registered to <@"+existingOwner+">. If that's wrong, ask an admin to fix it with `/track-character`.")
+	case existingOwner != "1" && existingOwner != "2" && existingOwner != "" && !canSubmitScores(i):
+		registerReply(s, i, "`"+characterName+"` is already registered to <@"+existingOwner+">. If that's wrong, ask an admin or submitter to move it with `/register character-name:"+characterName+" user:@the-right-person`.")
 		return
 	default:
+		// Unlinked, or a submitter/admin relinking it to the target.
 		if _, err := db.DB.Exec(
 			`UPDATE characters SET discord_user_id = $1 WHERE id = $2`,
-			callerID, existingID); err != nil {
+			targetID, existingID); err != nil {
 			log.Println("register: update failed:", err)
-			registerReply(s, i, "Something went wrong saving your character. Please try again later.")
+			registerReply(s, i, "Something went wrong saving the character. Please try again later.")
 			return
 		}
 	}
 
+	if forOther {
+		registerReply(s, i, "Done! `"+characterName+"` is now registered to "+who+". :tada:")
+		return
+	}
 	registerReply(s, i, "Done! `"+characterName+"` is now registered to you. :tada:\nTry `/culvert` to see your progression once your scores are in.")
 }

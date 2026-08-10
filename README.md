@@ -19,7 +19,7 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 | Command | Who | What |
 |---|---|---|
 | `/help` | everyone | User guide |
-| `/register` | everyone | Link your own character |
+| `/register` | everyone | Link a character (yours; submitters can link for others with `user:@x`) |
 | `/culvert` | everyone | Progression chart (self, `user:@x`, or `character-name:`) |
 | `/leaderboard` | everyone | Weekly ranked table, or guild-wide chart with `chart:True` |
 | `/personal-bests` | everyone | Best score per character |
@@ -27,7 +27,7 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 | `/report-score` | everyone | Self-report this week's score (admin-toggled) |
 | `/submit-scores` | submitters | Submit from a scores file or a message link (OCR) |
 | `/parse-images` | submitters | OCR screenshots to a scores file without submitting |
-| `/track-character`, `/untrack-character`, `/rename-character`, `/set-score` | submitters | Roster & score management |
+| `/untrack-character`, `/rename-character`, `/set-score` | submitters | Roster & score management |
 | `/config` | admins | View/change all bot settings |
 | `/setup` | admins | Admin setup guide |
 | Right click message → Apps → **Parse Images** / **Submit Scores** | submitters | The fastest weekly flow |

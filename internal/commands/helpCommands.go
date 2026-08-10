@@ -38,7 +38,7 @@ const setupText = `## Culvert Tracker - admin setup guide
 The bot then keeps ONE message per week there with the full score table (edited in place), plus a thread with submission notes and personal-best shoutouts. Leave unset for no announcements at all.
 
 **3. Track the roster**
-Members self-serve with ` + "`/register`" + `; you can also link anyone with ` + "`/track-character character-name:X discord-user-id:@member`" + `.
+Members self-serve with ` + "`/register`" + `; submitters can also link anyone with ` + "`/register character-name:X user:@member`" + `.
 
 **4. Submit scores weekly**
 Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine), post it in Discord, then right click the message -> Apps -> **Submit Scores**. Done.

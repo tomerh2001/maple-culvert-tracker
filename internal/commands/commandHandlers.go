@@ -27,7 +27,6 @@ var CommandHandlers = map[string]func(s *discordgo.Session, i *discordgo.Interac
 	"export-csv":        exportcsv,
 	"submit-scores":     submitScores,
 	"parse-images":      parseImages,
-	"track-character":   trackCharacter,
 	"untrack-character": untrackCharacter,
 	"rename-character":  renameCharacterCmd,
 	"set-score":         setScore,

@@ -386,5 +386,5 @@ func resetData(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	registerReply(s, i, fmt.Sprintf("Wiped **%d characters** and **%d scores**. The tracker is now a blank slate. :broom:\nOld weekly announcement messages in Discord are not deleted automatically - remove them manually if you want.\nStart fresh with `/register` / `/track-character` and your next screenshot submission.", chars, scores))
+	registerReply(s, i, fmt.Sprintf("Wiped **%d characters** and **%d scores**. The tracker is now a blank slate. :broom:\nOld weekly announcement messages in Discord are not deleted automatically - remove them manually if you want.\nStart fresh with `/register` and your next screenshot submission.", chars, scores))
 }
