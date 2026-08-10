@@ -296,24 +296,30 @@ func TestParticipationScaledWindows(t *testing.T) {
 	}
 	window := buildFullWindow(t, font, table)
 
-	// Fractional-scale recovery depends on how the client actually scales its
-	// UI (floor/round phase, filtering); until a real fractional-scale
-	// screenshot is available to calibrate against, these log the current
-	// best-effort rather than gate the build.
+	// Fractional scales are gated: crisp nearest-neighbour scaling must
+	// recover essentially every row (the phased scaled templates match it
+	// losslessly), smooth bilinear scaling nearly every row (antialiasing
+	// genuinely destroys information). A row counts only when both the name
+	// and the culvert score are exact.
 	cases := []struct {
-		label  string
-		scaled image.Image
+		label   string
+		scaled  image.Image
+		minRows int
 	}{
-		{"nearest-1.35x", upscaleNearest(window, 1.35)},
-		{"nearest-1.5x", upscaleNearest(window, 1.5)},
-		{"bilinear-1.35x", upscaleBilinear(window, 1.35)},
-		{"bilinear-1.5x", upscaleBilinear(window, 1.5)},
+		{"nearest-1.35x", upscaleNearest(window, 1.35), 16},
+		{"nearest-1.5x", upscaleNearest(window, 1.5), 16},
+		{"bilinear-1.35x", upscaleBilinear(window, 1.35), 15},
+		{"bilinear-1.5x", upscaleBilinear(window, 1.5), 15},
 	}
 	for _, c := range cases {
 		entries, err := ParseParticipationImage(encodePNG(t, c.scaled), members, font)
 		if err != nil {
 			t.Fatalf("parse %s: %v", c.label, err)
 		}
-		t.Logf("%s: parsed %d/%d rows", c.label, len(entries), len(keys))
+		correct := scoreEntries(entries, expected)
+		t.Logf("%s: %d/%d rows exact", c.label, correct, len(keys))
+		if correct < c.minRows {
+			t.Errorf("%s: %d/%d rows exact, want >= %d", c.label, correct, len(keys), c.minRows)
+		}
 	}
 }
