@@ -99,28 +99,123 @@ func binarizeFull(img image.Image) [][]bool {
 	return binarizeCrop(img, 0, 0, b.Dx())
 }
 
-// downscale2x box-averages the image 2:1 so 2x screenshots match the 1x
-// glyph templates.
-func downscale2x(img image.Image) image.Image {
+// downscaleBy shrinks the image by factor f (>1) so screenshots taken at
+// higher UI scales match the 1x glyph templates. Two sampling modes: area
+// averaging (smooth/bilinear-scaled sources) and center-point sampling, which
+// exactly recovers nearest-neighbour-scaled sources.
+func downscaleBy(img image.Image, f float64, area bool) image.Image {
 	b := img.Bounds()
-	w, h := b.Dx()/2, b.Dy()/2
+	w := int(float64(b.Dx()) / f)
+	h := int(float64(b.Dy()) / f)
+	if w < 1 || h < 1 {
+		return img
+	}
 	out := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
+		sy0 := int(float64(y) * f)
+		sy1 := int(float64(y+1) * f)
+		if sy1 <= sy0 {
+			sy1 = sy0 + 1
+		}
+		if sy1 > b.Dy() {
+			sy1 = b.Dy()
+		}
 		for x := 0; x < w; x++ {
-			var r, g, bl uint32
-			for dy := 0; dy < 2; dy++ {
-				for dx := 0; dx < 2; dx++ {
-					pr, pg, pb, _ := img.At(b.Min.X+2*x+dx, b.Min.Y+2*y+dy).RGBA()
+			sx0 := int(float64(x) * f)
+			sx1 := int(float64(x+1) * f)
+			if sx1 <= sx0 {
+				sx1 = sx0 + 1
+			}
+			if sx1 > b.Dx() {
+				sx1 = b.Dx()
+			}
+			if !area {
+				cy := int((float64(y) + 0.5) * f)
+				cx := int((float64(x) + 0.5) * f)
+				if cy >= b.Dy() {
+					cy = b.Dy() - 1
+				}
+				if cx >= b.Dx() {
+					cx = b.Dx() - 1
+				}
+				pr, pg, pb, _ := img.At(b.Min.X+cx, b.Min.Y+cy).RGBA()
+				i := out.PixOffset(x, y)
+				out.Pix[i] = uint8(pr >> 8)
+				out.Pix[i+1] = uint8(pg >> 8)
+				out.Pix[i+2] = uint8(pb >> 8)
+				out.Pix[i+3] = 0xFF
+				continue
+			}
+			var r, g, bl, n uint32
+			for yy := sy0; yy < sy1; yy++ {
+				for xx := sx0; xx < sx1; xx++ {
+					pr, pg, pb, _ := img.At(b.Min.X+xx, b.Min.Y+yy).RGBA()
 					r += pr >> 8
 					g += pg >> 8
 					bl += pb >> 8
+					n++
 				}
 			}
 			i := out.PixOffset(x, y)
-			out.Pix[i] = uint8(r / 4)
-			out.Pix[i+1] = uint8(g / 4)
-			out.Pix[i+2] = uint8(bl / 4)
+			out.Pix[i] = uint8(r / n)
+			out.Pix[i+1] = uint8(g / n)
+			out.Pix[i+2] = uint8(bl / n)
 			out.Pix[i+3] = 0xFF
+		}
+	}
+	return out
+}
+
+// fixtureRowPitch is the vertical distance between table text rows at 1x.
+const fixtureRowPitch = 26.2
+
+// estimateScaleFromPitch measures the median spacing between text rows in the
+// binarized image and derives the UI scale from it. Returns 0 when no
+// plausible pitch is found.
+func estimateScaleFromPitch(grid [][]bool) float64 {
+	bands := detectRows(grid)
+	pitches := []int{}
+	for i := 1; i < len(bands); i++ {
+		d := bands[i][0] - bands[i-1][0]
+		if d >= 18 && d <= 90 {
+			pitches = append(pitches, d)
+		}
+	}
+	if len(pitches) < 4 {
+		return 0
+	}
+	sortInts(pitches)
+	return float64(pitches[len(pitches)/2]) / fixtureRowPitch
+}
+
+func sortInts(v []int) {
+	for i := 1; i < len(v); i++ {
+		for j := i; j > 0 && v[j] < v[j-1]; j-- {
+			v[j], v[j-1] = v[j-1], v[j]
+		}
+	}
+}
+
+// candidateScales returns the UI scales to attempt, cheapest-first: native,
+// the pitch-derived estimate (with neighbours), then a coarse ladder.
+func candidateScales(img image.Image) []float64 {
+	scales := []float64{1.0}
+	if est := estimateScaleFromPitch(binarizeFull(img)); est > 1.04 && est < 4.0 {
+		for _, d := range []float64{0, -0.04, 0.04, -0.08, 0.08} {
+			scales = append(scales, est+d)
+		}
+	}
+	for i := 1; i <= 10; i++ {
+		scales = append(scales, 1.0+float64(i)*0.2)
+	}
+	seen := map[int]bool{}
+	out := []float64{}
+	for _, f := range scales {
+		key := int(f*100 + 0.5)
+		f = float64(key) / 100 // snap to 2 decimals so integer scales stay exact
+		if f >= 0.99 && !seen[key] {
+			seen[key] = true
+			out = append(out, f)
 		}
 	}
 	return out
@@ -236,15 +331,40 @@ func ParseParticipationImage(imgData []byte, memberNames []string, font *GPQFont
 		return nil, err
 	}
 
+	type attempt struct {
+		area    bool
+		lenient bool
+	}
 	best := []ScoreEntry{}
 	bestHeader := false
-	for _, scaled := range []image.Image{img, downscale2x(img)} {
-		entries, headerFound := parseParticipationGrid(binarizeFull(scaled), font, memberNames)
-		better := len(entries) > len(best) ||
-			(len(entries) == len(best) && headerFound && !bestHeader)
-		if better {
-			best = entries
-			bestHeader = headerFound
+	for _, f := range candidateScales(img) {
+		attempts := []attempt{{false, false}}
+		if f > 1.01 {
+			// Strict matching first (exact recoveries), lenient as fallback
+			// for slightly distorted rescales.
+			attempts = []attempt{{false, false}, {true, false}, {false, true}, {true, true}}
+		}
+		for _, a := range attempts {
+			scaled := img
+			parseFont := font
+			if f > 1.01 {
+				scaled = downscaleBy(img, f, a.area)
+				if a.lenient {
+					parseFont = font.withTolerance(0.22)
+				}
+			}
+			entries, headerFound := parseParticipationGrid(binarizeFull(scaled), parseFont, memberNames)
+			better := len(entries) > len(best) ||
+				(len(entries) == len(best) && headerFound && !bestHeader)
+			if better {
+				best = entries
+				bestHeader = headerFound
+			}
+			// A full page of rows under a located header from a strict parse
+			// is confident; the pitch-derived scales come first, stop early.
+			if !a.lenient && headerFound && len(entries) >= 15 {
+				return best, nil
+			}
 		}
 	}
 	return best, nil

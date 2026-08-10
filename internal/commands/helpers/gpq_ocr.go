@@ -55,6 +55,21 @@ type gpqGlyph struct {
 // GPQFont holds the flattened glyph templates used for pixel matching.
 type GPQFont struct {
 	glyphs []gpqGlyph
+	// tol overrides gpqMatchTol when > 0 (used for rescaled screenshots,
+	// where glyphs are slightly distorted).
+	tol float64
+}
+
+// withTolerance returns a view of the font using the given match tolerance.
+func (f *GPQFont) withTolerance(tol float64) *GPQFont {
+	return &GPQFont{glyphs: f.glyphs, tol: tol}
+}
+
+func (f *GPQFont) matchTol() float64 {
+	if f.tol > 0 {
+		return f.tol
+	}
+	return gpqMatchTol
 }
 
 var (
@@ -302,7 +317,7 @@ func matchRow(row [][]bool, font *GPQFont) string {
 		}
 		blankRun = 0
 		ch, wT, dn, ok := bestGlyphAt(row, x, font)
-		if ok && dn <= gpqMatchTol {
+		if ok && dn <= font.matchTol() {
 			out = append(out, ch)
 			x += wT
 			skipped = 0

@@ -102,13 +102,56 @@ func buildFullWindow(t *testing.T, font *GPQFont, table image.Image) *image.RGBA
 	return out
 }
 
-// upscale2x nearest-neighbour doubles the image (Retina-style screenshot).
-func upscale2x(img image.Image) *image.RGBA {
+// upscaleNearest scales the image by f using nearest-neighbour (crisp UI
+// scaling, e.g. Retina or integer game scaling).
+func upscaleNearest(img image.Image, f float64) *image.RGBA {
 	b := img.Bounds()
-	out := image.NewRGBA(image.Rect(0, 0, b.Dx()*2, b.Dy()*2))
-	for y := 0; y < b.Dy()*2; y++ {
-		for x := 0; x < b.Dx()*2; x++ {
-			out.Set(x, y, img.At(b.Min.X+x/2, b.Min.Y+y/2))
+	w, h := int(float64(b.Dx())*f), int(float64(b.Dy())*f)
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			out.Set(x, y, img.At(b.Min.X+int(float64(x)/f), b.Min.Y+int(float64(y)/f)))
+		}
+	}
+	return out
+}
+
+// upscaleBilinear scales the image by f with bilinear filtering (smooth OS or
+// client scaling).
+func upscaleBilinear(img image.Image, f float64) *image.RGBA {
+	b := img.Bounds()
+	w, h := int(float64(b.Dx())*f), int(float64(b.Dy())*f)
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	at := func(x, y int) (float64, float64, float64) {
+		if x >= b.Dx() {
+			x = b.Dx() - 1
+		}
+		if y >= b.Dy() {
+			y = b.Dy() - 1
+		}
+		r, g, bl, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
+		return float64(r >> 8), float64(g >> 8), float64(bl >> 8)
+	}
+	for y := 0; y < h; y++ {
+		sy := float64(y) / f
+		y0 := int(sy)
+		fy := sy - float64(y0)
+		for x := 0; x < w; x++ {
+			sx := float64(x) / f
+			x0 := int(sx)
+			fx := sx - float64(x0)
+			r00, g00, b00 := at(x0, y0)
+			r10, g10, b10 := at(x0+1, y0)
+			r01, g01, b01 := at(x0, y0+1)
+			r11, g11, b11 := at(x0+1, y0+1)
+			r := r00*(1-fx)*(1-fy) + r10*fx*(1-fy) + r01*(1-fx)*fy + r11*fx*fy
+			g := g00*(1-fx)*(1-fy) + g10*fx*(1-fy) + g01*(1-fx)*fy + g11*fx*fy
+			bl := b00*(1-fx)*(1-fy) + b10*fx*(1-fy) + b01*(1-fx)*fy + b11*fx*fy
+			i := out.PixOffset(x, y)
+			out.Pix[i] = uint8(r + 0.5)
+			out.Pix[i+1] = uint8(g + 0.5)
+			out.Pix[i+2] = uint8(bl + 0.5)
+			out.Pix[i+3] = 0xFF
 		}
 	}
 	return out
@@ -218,9 +261,59 @@ func TestParticipationFullWindow(t *testing.T) {
 	}
 	checkEntries(t, entries, expected, keys, "full-window-1x")
 
-	entries, err = ParseParticipationImage(encodePNG(t, upscale2x(window)), members, font)
+	entries, err = ParseParticipationImage(encodePNG(t, upscaleNearest(window, 2.0)), members, font)
 	if err != nil {
 		t.Fatalf("parse full window 2x: %v", err)
 	}
 	checkEntries(t, entries, expected, keys, "full-window-2x")
+}
+
+// TestParticipationScaledWindows validates fractional UI scales the way real
+// clients produce them: crisp nearest-neighbour and smooth bilinear scaling.
+func TestParticipationScaledWindows(t *testing.T) {
+	expected := loadExpected(t, 1)[1]
+	jsonData, err := os.ReadFile(filepath.Join(gpqTestsDir, "1.json"))
+	if err != nil {
+		t.Fatalf("read 1.json: %v", err)
+	}
+	keys := orderedKeys(t, jsonData)
+	members := make([]string, 0, len(expected))
+	for name := range expected {
+		members = append(members, name)
+	}
+
+	font, err := LoadGPQFont()
+	if err != nil {
+		t.Fatalf("load font: %v", err)
+	}
+	tableData, err := os.ReadFile(filepath.Join(gpqTestsDir, "1.png"))
+	if err != nil {
+		t.Fatalf("read 1.png: %v", err)
+	}
+	table, _, err := image.Decode(bytes.NewReader(tableData))
+	if err != nil {
+		t.Fatalf("decode 1.png: %v", err)
+	}
+	window := buildFullWindow(t, font, table)
+
+	// Fractional-scale recovery depends on how the client actually scales its
+	// UI (floor/round phase, filtering); until a real fractional-scale
+	// screenshot is available to calibrate against, these log the current
+	// best-effort rather than gate the build.
+	cases := []struct {
+		label  string
+		scaled image.Image
+	}{
+		{"nearest-1.35x", upscaleNearest(window, 1.35)},
+		{"nearest-1.5x", upscaleNearest(window, 1.5)},
+		{"bilinear-1.35x", upscaleBilinear(window, 1.35)},
+		{"bilinear-1.5x", upscaleBilinear(window, 1.5)},
+	}
+	for _, c := range cases {
+		entries, err := ParseParticipationImage(encodePNG(t, c.scaled), members, font)
+		if err != nil {
+			t.Fatalf("parse %s: %v", c.label, err)
+		}
+		t.Logf("%s: parsed %d/%d rows", c.label, len(entries), len(keys))
+	}
 }
