@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -70,18 +71,25 @@ func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
+	runParseImages(s, i, imageURLs)
+}
+
+// ocrImagesToScores downloads and OCRs GPQ score images, returning the merged
+// scores (attachment order preserved, top-to-bottom rows; duplicate names keep
+// their first-seen position with later scores overwriting) and any parsed
+// names that do not match an active tracked character. A non-nil error is safe
+// to display to the user.
+func ocrImagesToScores(imageURLs []string) (merged []helpers.ScoreEntry, unmatched []helpers.ScoreEntry, err error) {
 	font, err := helpers.LoadGPQFont()
 	if err != nil {
 		log.Println("parseImages: failed to load font templates:", err)
-		editContent("Internal error loading font templates. Please try again later.")
-		return
+		return nil, nil, errors.New("Internal error loading font templates. Please try again later.")
 	}
 
 	characters, err := helpers.GetActiveCharacters(apiredis.RedisDB, db.DB)
 	if err != nil {
 		log.Println("parseImages: failed to query active characters:", err)
-		editContent("Internal error querying active characters. Please try again later.")
-		return
+		return nil, nil, errors.New("Internal error querying active characters. Please try again later.")
 	}
 	memberNames := make([]string, 0, len(*characters))
 	activeSet := make(map[string]bool, len(*characters))
@@ -112,15 +120,12 @@ func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	wg.Wait()
 
-	// Merge preserving order: first attachment to last, top-to-bottom rows.
-	// Duplicate names keep their first-seen position; later scores overwrite.
-	merged := []helpers.ScoreEntry{}
+	merged = []helpers.ScoreEntry{}
 	mergedPos := map[string]int{}
 	for idx, r := range results {
 		if r.err != nil {
 			log.Println("parseImages: failed to process image", imageURLs[idx], r.err)
-			editContent("Failed to process one of the images. Please ensure they are valid `small` style GPQ score images.")
-			return
+			return nil, nil, errors.New("Failed to process one of the images. Please ensure they are valid `small` style GPQ score images.")
 		}
 		for _, e := range r.scores {
 			if pos, ok := mergedPos[e.Name]; ok {
@@ -132,8 +137,25 @@ func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 
+	return merged, collectUnmatchedScores(merged, activeSet), nil
+}
+
+// runParseImages OCRs the given images and edits the deferred interaction
+// response with the resulting JSON (or the list of unmatched names).
+func runParseImages(s *discordgo.Session, i *discordgo.InteractionCreate, imageURLs []string) {
+	content := new(string)
+	editContent := func(msg string) {
+		*content = msg
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: content})
+	}
+
+	merged, unmatched, err := ocrImagesToScores(imageURLs)
+	if err != nil {
+		editContent(err.Error())
+		return
+	}
+
 	// Fail when any parsed name is not an active character.
-	unmatched := collectUnmatchedScores(merged, activeSet)
 	if len(unmatched) > 0 {
 		*content = "Some parsed character names did not match any active character. Fix the images or track these characters first."
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{

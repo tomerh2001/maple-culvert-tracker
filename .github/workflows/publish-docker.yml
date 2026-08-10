@@ -10,8 +10,8 @@ concurrency:
 
 env:
   CR_HOST: ghcr.io
-  CR_OWNER: slazurin
-  IMAGE_NAME_PREFIX: ghcr.io/slazurin/maple-culvert-tracker
+  CR_OWNER: tomerh2001
+  IMAGE_NAME_PREFIX: ghcr.io/tomerh2001/maple-culvert-tracker
 
 jobs:
   publish-services:

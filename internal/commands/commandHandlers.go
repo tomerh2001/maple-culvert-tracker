@@ -72,4 +72,7 @@ var CommandHandlers = map[string]func(s *discordgo.Session, i *discordgo.Interac
 	"weekly-sandbaggers":            weeklySandbaggers,
 	"participation":                 participation,
 	"parse-images":                  parseImages,
+	// Message context menu commands (right click a message -> Apps).
+	"Parse Images":  parseImagesFromMessage,
+	"Submit Scores": submitScoresFromMessage,
 }

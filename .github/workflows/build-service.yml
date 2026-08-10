@@ -35,11 +35,11 @@ on:
         type: string
       container-registry-owner:
         description: 'Container registry owner'
-        default: 'slazurin'
+        default: 'tomerh2001'
         type: string
       image-name-prefix:
         description: 'Image name prefix'
-        default: 'ghcr.io/slazurin/maple-culvert-tracker'
+        default: 'ghcr.io/tomerh2001/maple-culvert-tracker'
         type: string
 
 jobs:

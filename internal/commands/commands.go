@@ -151,12 +151,12 @@ var Commands = []*discordgo.ApplicationCommand{
 				Name:        "character-name",
 				Description: "Character name",
 			},
-		{
-			Required:    false,
-			Type:        discordgo.ApplicationCommandOptionString,
-			Name:        "discord-user-id",
-			Description: "Discord user global username or ID (default: untracked)",
-		},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionUser,
+				Name:        "discord-user-id",
+				Description: "Discord member this character belongs to (default: untracked)",
+			},
 			{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionBoolean,
@@ -403,5 +403,13 @@ var Commands = []*discordgo.ApplicationCommand{
 				Description: "Additional Discord message ID",
 			},
 		},
+	},
+	{
+		Name: "Parse Images",
+		Type: discordgo.MessageApplicationCommand,
+	},
+	{
+		Name: "Submit Scores",
+		Type: discordgo.MessageApplicationCommand,
 	},
 }

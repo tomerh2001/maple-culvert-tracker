@@ -29,7 +29,10 @@ func trackCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			characterName = strings.Trim(strings.ToLower(v.StringValue()), " ")
 		}
 		if v.Name == "discord-user-id" {
-			discordUserID = strings.Trim(v.StringValue(), " ")
+			// User-type option: the client resolves the @mention to a user.
+			if u := v.UserValue(nil); u != nil {
+				discordUserID = u.ID
+			}
 		}
 		if v.Name == "skip-name-check" {
 			skipNameCheck = v.BoolValue()
