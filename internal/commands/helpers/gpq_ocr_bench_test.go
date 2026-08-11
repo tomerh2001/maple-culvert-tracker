@@ -113,8 +113,13 @@ func downscaleArea(img image.Image, f float64) *image.RGBA {
 // row pitch, then search a fine grid of factors and sampling phases, shrink
 // the image to 1x each time and run the strict 1x parser on it.
 func parseViaDownscale(img image.Image, memberNames []string, font *GPQFont) []ScoreEntry {
+	resolve := func(rows []parsedRow) []ScoreEntry {
+		var defects []string
+		return resolveRows(rows, memberNames, &defects)
+	}
 	grid := binarizeFull(img)
-	best, _ := parseParticipationGrid(grid, font, memberNames)
+	rows, _ := parseParticipationGrid(grid, font, nil)
+	best := resolve(rows)
 	est := estimateScaleFromPitch(grid)
 	if est < gpqMinScaledEst {
 		return best
@@ -125,7 +130,8 @@ func parseViaDownscale(img image.Image, memberNames []string, font *GPQFont) []S
 			continue
 		}
 		for _, delta := range []float64{0, 1.0 / 3, 2.0 / 3} {
-			e, _ := parseParticipationGrid(binarizeFull(downscaleByPhase(img, f, delta)), font, memberNames)
+			rows, _ := parseParticipationGrid(binarizeFull(downscaleByPhase(img, f, delta)), font, nil)
+			e := resolve(rows)
 			if len(e) > len(best) {
 				best = e
 			}
@@ -133,7 +139,8 @@ func parseViaDownscale(img image.Image, memberNames []string, font *GPQFont) []S
 				return best
 			}
 		}
-		e, _ := parseParticipationGrid(binarizeFull(downscaleArea(img, f)), font, memberNames)
+		rows, _ := parseParticipationGrid(binarizeFull(downscaleArea(img, f)), font, nil)
+		e := resolve(rows)
 		if len(e) > len(best) {
 			best = e
 		}

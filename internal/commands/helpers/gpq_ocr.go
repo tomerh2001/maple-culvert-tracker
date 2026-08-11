@@ -19,20 +19,41 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// parseDeadlineNs is a cooperative wall-clock deadline (unix nanos) the hot
-// match loops poll so a single expensive pass cannot run unbounded. 0 disables
-// it. Set by ParseParticipationImage; package-global because threading it
-// through every matcher signature would be invasive and the OCR is never run
-// concurrently for two different images in one goroutine.
-var parseDeadlineNs atomic.Int64
+// parseRun tracks one ParseParticipation invocation. It exists so every
+// matching pass of that invocation shares a single "did anything hit its
+// deadline" flag, which the caller surfaces as ParseResult.Truncated.
+type parseRun struct {
+	truncated atomic.Bool
+}
 
-func setParseDeadline(d time.Time) { parseDeadlineNs.Store(d.UnixNano()) }
-func clearParseDeadline()          { parseDeadlineNs.Store(0) }
+// until returns a cooperative clock for one pass of this run, expiring at t.
+func (r *parseRun) until(t time.Time) *parseClock {
+	return &parseClock{deadline: t, run: r}
+}
 
-// deadlineExceeded reports whether the cooperative parse deadline has passed.
-func deadlineExceeded() bool {
-	ns := parseDeadlineNs.Load()
-	return ns != 0 && time.Now().UnixNano() > ns
+// parseClock is the cooperative wall-clock deadline the hot match loops poll
+// so a single expensive pass cannot run unbounded. It is threaded explicitly
+// through the matching call chain (never package-global: images are parsed in
+// parallel goroutines and must not share deadlines). A nil clock never
+// expires (legacy paths and direct test calls).
+type parseClock struct {
+	deadline time.Time
+	run      *parseRun
+}
+
+// exceeded reports whether the deadline has passed, recording the expiry on
+// the owning run so the parse result can be flagged as truncated.
+func (c *parseClock) exceeded() bool {
+	if c == nil || c.deadline.IsZero() {
+		return false
+	}
+	if time.Now().After(c.deadline) {
+		if c.run != nil {
+			c.run.truncated.Store(true)
+		}
+		return true
+	}
+	return false
 }
 
 // This file ports the lossless pixel-template-matching path of the Python
@@ -426,11 +447,99 @@ func decodeTemplate(data []byte) ([][]bool, int, int, error) {
 	return bits, w, h, nil
 }
 
-// ScoreEntry is a single parsed character name and score, preserving the
-// top-to-bottom row order they appear in the image.
+// ScoreEntry is a single parsed table row, preserving the top-to-bottom row
+// order they appear in the image. Name is the reconciled member name when
+// Matched, otherwise the raw decode (so legacy callers keep working); RawName
+// always carries the raw decode, Row the parsed-row index in band order and
+// Confidence the reconciliation confidence of the best roster candidate.
 type ScoreEntry struct {
-	Name  string
-	Score int
+	Name       string
+	Score      int
+	RawName    string
+	Matched    bool
+	Confidence float64
+	Row        int
+}
+
+// parsedRow is one raw parsed table row before any roster reconciliation:
+// the cleaned raw name decode with its truncation evidence, the decoded score
+// digits, the fraction of the row's core ink the accepted glyph templates
+// explain (v in [0,1]) and the band's absolute y start (pitch conformity).
+type parsedRow struct {
+	rawName  string
+	ellipsis bool
+	score    string
+	v        float64
+	bandY0   int
+}
+
+// resolveRows converts parsed rows to entries: scores are parsed with
+// unreadable ones skipped as recorded defects (never aborting the remaining
+// rows) and non-positive ones skipped silently; every surviving row becomes
+// one entry in band order (never deduplicated); then each raw name is
+// reconciled once against the roster. When several rows reconcile to the same
+// member, the highest-confidence row keeps the match and the others revert to
+// their raw decode, recorded as a defect.
+func resolveRows(rows []parsedRow, members []string, defects *[]string) []ScoreEntry {
+	entries := []ScoreEntry{}
+	ellipsis := []bool{}
+	for i, r := range rows {
+		score, err := strconv.Atoi(r.score)
+		if err != nil {
+			*defects = append(*defects, "row "+strconv.Itoa(i+1)+" ("+r.rawName+"): unreadable score - row skipped")
+			continue
+		}
+		if score <= 0 {
+			continue
+		}
+		entries = append(entries, ScoreEntry{Name: r.rawName, RawName: r.rawName, Score: score, Row: i})
+		ellipsis = append(ellipsis, r.ellipsis)
+	}
+
+	for idx := range entries {
+		member, conf, matched := reconcileNameConfidence(entries[idx].RawName, ellipsis[idx], members)
+		entries[idx].Confidence = conf
+		if matched {
+			entries[idx].Name = member
+			entries[idx].Matched = true
+		}
+	}
+
+	// Collision resolution: two rows claiming the same member cannot both be
+	// right. The higher-confidence row keeps the match (ties keep the earlier
+	// row); the rest revert to their raw decode.
+	claims := map[string][]int{}
+	claimed := []string{}
+	for idx := range entries {
+		if entries[idx].Matched {
+			if len(claims[entries[idx].Name]) == 0 {
+				claimed = append(claimed, entries[idx].Name)
+			}
+			claims[entries[idx].Name] = append(claims[entries[idx].Name], idx)
+		}
+	}
+	for _, m := range claimed {
+		idxs := claims[m]
+		if len(idxs) < 2 {
+			continue
+		}
+		best := idxs[0]
+		for _, id := range idxs[1:] {
+			if entries[id].Confidence > entries[best].Confidence {
+				best = id
+			}
+		}
+		for _, id := range idxs {
+			if id == best {
+				continue
+			}
+			entries[id].Matched = false
+			entries[id].Name = entries[id].RawName
+			*defects = append(*defects, "rows "+strconv.Itoa(entries[best].Row+1)+" and "+strconv.Itoa(entries[id].Row+1)+
+				" both resemble member "+m+" - kept the closer row, left "+entries[id].RawName+" raw")
+		}
+	}
+	return entries
 }
 
 // ParseSmallImage decodes a "small" GPQ score table image and returns the
@@ -448,25 +557,22 @@ func ParseSmallImage(imgData []byte, memberNames []string, font *GPQFont) ([]Sco
 	decodedNames, nameEdges := decodeColumnWithEdges(namesBin, font, nameEdgeEvidencePx)
 	decodedScores := decodeColumn(scoresBin, font)
 
-	names := make([]string, len(decodedNames))
-	for i, d := range decodedNames {
-		name, ellipsis := cleanDecodedName(d)
-		names[i] = reconcileName(name, ellipsis || nameEdges[i], memberNames)
-	}
-	scores := make([]string, len(decodedScores))
+	// Zip score rows with name rows (extra name rows are dropped, missing ones
+	// padded - gpq.py main behaviour), then resolve like any other parse.
+	rows := make([]parsedRow, 0, len(decodedScores))
 	for i, d := range decodedScores {
-		scores[i] = keepDigits(d)
+		name, ellipsis := "", false
+		if i < len(decodedNames) {
+			name, ellipsis = cleanDecodedName(decodedNames[i])
+			ellipsis = ellipsis || nameEdges[i]
+		}
+		if name == "" {
+			name = "__unknown_" + strconv.Itoa(i) + "__"
+		}
+		rows = append(rows, parsedRow{rawName: name, ellipsis: ellipsis, score: keepDigits(d)})
 	}
-
-	// Pad/truncate to equal length (gpq.py main behaviour).
-	for len(names) < len(scores) {
-		names = append(names, "__unknown_"+strconv.Itoa(len(names))+"__")
-	}
-	if len(scores) > len(names) {
-		scores = scores[:len(names)]
-	}
-
-	return mergeScoresWithNames(scores, names), nil
+	var defects []string
+	return resolveRows(rows, memberNames, &defects), nil
 }
 
 // binarizeCrop crops the image to columns [x0, x1) (clamped to width) over the
@@ -605,7 +711,7 @@ func inkNearRightEdge(rows [][]bool, edgePx int) bool {
 
 // matchRow decodes the first "word" of a text row band (true = ink).
 func matchRow(row [][]bool, font *GPQFont) string {
-	return matchRowDual(row, row, font)
+	return matchRowDual(row, row, font, nil)
 }
 
 // colPrefix returns per-column ink prefix sums: pre[x] = ink in columns
@@ -633,11 +739,21 @@ func colPrefix(rows [][]bool) []int {
 // planes: loose (possibly ink) and tight (certainly ink). Pixels set in
 // loose but not tight are antialiased edges and cost nothing whichever way a
 // template covers them. Lossless sources pass the same grid twice, which
-// reduces exactly to strict binary matching.
-func matchRowDual(loose, tight [][]bool, font *GPQFont) string {
+// reduces exactly to strict binary matching. FAILS CLOSED on clock expiry:
+// returns "" rather than a partial word.
+func matchRowDual(loose, tight [][]bool, font *GPQFont, clock *parseClock) string {
+	text, _, _ := matchRowDualCov(loose, tight, font, clock)
+	return text
+}
+
+// matchRowDualCov is matchRowDual reporting ink coverage too: how many tight
+// (certain) ink pixels of the band the accepted glyph templates explain, and
+// the band's total tight ink. A matched glyph explains its advance span plus
+// one column each side (mirroring the NCC decoder's accounting).
+func matchRowDualCov(loose, tight [][]bool, font *GPQFont, clock *parseClock) (string, int, int) {
 	h := len(loose)
 	if h == 0 {
-		return ""
+		return "", 0, 0
 	}
 	w := len(loose[0])
 	loosePre := colPrefix(loose)
@@ -645,17 +761,32 @@ func matchRowDual(loose, tight [][]bool, font *GPQFont) string {
 	if &tight[0] != &loose[0] {
 		tightPre = colPrefix(tight)
 	}
+	totalInk := tightPre[w]
 	colInk := func(c int) bool { return loosePre[c+1] > loosePre[c] }
 
 	gapStop := font.gapStopPx()
 	maxSkip := font.maxSkipPx()
 	out := []rune{}
+	covered := make([]bool, w)
+	cover := func(lo, hi int) {
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > w {
+			hi = w
+		}
+		for c := lo; c < hi; c++ {
+			covered[c] = true
+		}
+	}
 	x := 0
 	skipped := 0
 	blankRun := 0
 	for x < w {
-		if deadlineExceeded() {
-			break
+		if clock.exceeded() {
+			// Fail closed: an expired deadline must never yield a partial
+			// word that could reconcile onto the wrong member.
+			return "", 0, totalInk
 		}
 		if !colInk(x) {
 			x++
@@ -670,13 +801,16 @@ func matchRowDual(loose, tight [][]bool, font *GPQFont) string {
 		ch, wT, dn, ok := bestGlyphAt(loose, tight, loosePre, tightPre, x, font)
 		if ok && dn <= font.matchTol() {
 			out = append(out, ch)
+			cover(x-1, x+wT+1)
 			if font.gapAdvance {
 				// Scaled template widths can differ by a pixel from the
 				// on-screen instance; advancing to just before the template
 				// end and re-syncing on the next gap never overshoots into
-				// the following glyph.
+				// the following glyph. The consumed trailing ink belongs to
+				// this glyph's instance.
 				x += wT - 1
 				for x < w && colInk(x) {
+					covered[x] = true
 					x++
 				}
 			} else {
@@ -691,7 +825,13 @@ func matchRowDual(loose, tight [][]bool, font *GPQFont) string {
 			}
 		}
 	}
-	return string(out)
+	explained := 0
+	for c := 0; c < w; c++ {
+		if covered[c] {
+			explained += tightPre[c+1] - tightPre[c]
+		}
+	}
+	return string(out), explained, totalInk
 }
 
 // bestGlyphAt finds the best-matching template starting at column x. Ties on
@@ -854,29 +994,6 @@ func keepDigits(s string) string {
 		}
 	}
 	return b.String()
-}
-
-// mergeScoresWithNames zips scores and names, stopping at the first non-integer
-// score (mirrors the Python int()/break behaviour).
-func mergeScoresWithNames(scores, names []string) []ScoreEntry {
-	entries := []ScoreEntry{}
-	pos := map[string]int{}
-	for i := range scores {
-		score, err := strconv.Atoi(scores[i])
-		if err != nil {
-			break
-		}
-		if score > 0 && i < len(names) {
-			name := names[i]
-			if idx, ok := pos[name]; ok {
-				entries[idx].Score = score
-			} else {
-				pos[name] = len(entries)
-				entries = append(entries, ScoreEntry{Name: name, Score: score})
-			}
-		}
-	}
-	return entries
 }
 
 // ── Name reconciliation (font_match.py) ─────────────────────────────────────
@@ -1106,8 +1223,15 @@ func weightedEditSimilarity(ar, br []rune) float64 {
 // nameMatchMargin so a decode resembling several members stays literal
 // instead of guessing.
 func reconcileName(dec string, ellipsis bool, members []string) string {
+	name, _, _ := reconcileNameConfidence(dec, ellipsis, members)
+	return name
+}
+
+// reconcileNameConfidence is reconcileName reporting the best candidate's
+// confidence and whether the decode was actually reconciled onto a member.
+func reconcileNameConfidence(dec string, ellipsis bool, members []string) (string, float64, bool) {
 	if len([]rune(dec)) < 2 {
-		return dec
+		return dec, 0, false
 	}
 	df := normName(dec)
 	bestMember := ""
@@ -1123,12 +1247,12 @@ func reconcileName(dec string, ellipsis bool, members []string) string {
 		}
 	}
 	if best == 1.0 {
-		return bestMember // exact decode of a roster name
+		return bestMember, best, true // exact decode of a roster name
 	}
 	if best >= nameMatchThreshold && best-second >= nameMatchMargin {
-		return bestMember
+		return bestMember, best, true
 	}
-	return dec
+	return dec, best, false
 }
 
 // levenshtein returns the edit distance between a and b (names are short, so

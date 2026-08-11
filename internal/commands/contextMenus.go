@@ -124,25 +124,37 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 		return false
 	}
 
-	merged, unmatched, err := ocrImagesToScores(imageURLs)
+	oc, err := ocrImagesToScores(imageURLs)
 	if err != nil {
 		r.Edit(err.Error())
 		return false
 	}
-	if len(unmatched) > 0 {
-		trackedSet := trackedSetOf(merged, unmatched)
-		msg := fmt.Sprintf("Nothing submitted: %d of %d parsed characters matched a tracked character, %d did not (marked NEW below). Correct the images or track them, then resubmit.",
-			len(merged)-len(unmatched), len(merged), len(unmatched))
-		r.EditWithTable(msg, formatAnnotatedScoresTable(merged, trackedSet), "parsed_scores.txt")
+	// Submission safety gates: an incomplete (time-limited) or internally
+	// conflicting parse must never be written to the database.
+	if oc.truncated {
+		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again or crop the screenshot, or run Parse Images and submit the verified JSON instead.")
 		return false
 	}
-	if idx := firstDescendingViolation(merged); idx >= 0 {
+	if len(oc.conflicts) > 0 {
+		r.Edit("Nothing submitted: the images disagree on some characters' scores:\n- " +
+			strings.Join(capList(oc.conflicts, 10), "\n- ") +
+			"\nRun Parse Images on the message, verify the JSON, then submit that instead.")
+		return false
+	}
+	if len(oc.unmatched) > 0 {
+		trackedSet := trackedSetOf(oc.merged, oc.unmatched)
+		msg := fmt.Sprintf("Nothing submitted: %d of %d parsed characters matched a tracked character, %d did not (marked NEW below). Correct the images or track them, then resubmit.",
+			len(oc.merged)-len(oc.unmatched), len(oc.merged), len(oc.unmatched))
+		r.EditWithTable(msg, formatAnnotatedScoresTable(oc.merged, trackedSet), "parsed_scores.txt")
+		return false
+	}
+	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
 		r.Edit("Nothing submitted: parsed scores are not in descending order (`" +
-			merged[idx-1].Name + "` -> `" + merged[idx].Name +
+			oc.merged[idx-1].Name + "` -> `" + oc.merged[idx].Name +
 			"`), which usually means an OCR misread. Run Parse Images on the message, verify the JSON, then submit that instead.")
 		return false
 	}
-	for _, e := range merged {
+	for _, e := range oc.merged {
 		scores[e.Name] = e.Score
 	}
 	return true

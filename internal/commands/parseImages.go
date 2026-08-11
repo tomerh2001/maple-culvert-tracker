@@ -50,34 +50,46 @@ func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	runParseImages(r, imageURLs)
 }
 
-// ocrImagesToScores downloads and OCRs GPQ score images, returning the merged
-// scores (attachment order preserved, top-to-bottom rows; duplicate names keep
-// their first-seen position with later scores overwriting) and any parsed
-// names that do not match an active tracked character. A non-nil error is safe
-// to display to the user.
-func ocrImagesToScores(imageURLs []string) (merged []helpers.ScoreEntry, unmatched []helpers.ScoreEntry, err error) {
+// ocrOutcome is the merged result of OCRing one message's images.
+type ocrOutcome struct {
+	// merged holds one entry per distinct parsed row across all images
+	// (attachment order preserved, top-to-bottom rows). Rows are keyed by
+	// their identity (reconciled member when matched, raw decode otherwise):
+	// re-seeing the same key with the same score is an overlapping
+	// screenshot and is deduplicated; the same key with a DIFFERENT score is
+	// recorded as a conflict and never silently overwritten.
+	merged    []helpers.ScoreEntry
+	unmatched []helpers.ScoreEntry
+	// truncated is set when any image's parse hit its time budget: the rows
+	// may be incomplete.
+	truncated bool
+	conflicts []string
+	defects   []string
+}
+
+// ocrImagesToScores downloads and OCRs GPQ score images. A non-nil error is
+// safe to display to the user.
+func ocrImagesToScores(imageURLs []string) (*ocrOutcome, error) {
 	font, err := helpers.LoadGPQFont()
 	if err != nil {
 		log.Println("parseImages: failed to load font templates:", err)
-		return nil, nil, errors.New("Internal error loading font templates. Please try again later.")
+		return nil, errors.New("Internal error loading font templates. Please try again later.")
 	}
 
 	characters, err := helpers.GetActiveCharacters(apiredis.RedisDB, db.DB)
 	if err != nil {
 		log.Println("parseImages: failed to query active characters:", err)
-		return nil, nil, errors.New("Internal error querying active characters. Please try again later.")
+		return nil, errors.New("Internal error querying active characters. Please try again later.")
 	}
 	memberNames := make([]string, 0, len(*characters))
-	activeSet := make(map[string]bool, len(*characters))
 	for _, c := range *characters {
 		memberNames = append(memberNames, c.MapleCharacterName)
-		activeSet[c.MapleCharacterName] = true
 	}
 
 	// Process each image in parallel: download into memory then parse.
 	type imgResult struct {
-		scores []helpers.ScoreEntry
-		err    error
+		res *helpers.ParseResult
+		err error
 	}
 	results := make([]imgResult, len(imageURLs))
 	var wg sync.WaitGroup
@@ -94,44 +106,71 @@ func ocrImagesToScores(imageURLs []string) (merged []helpers.ScoreEntry, unmatch
 				log.Printf("parseImages: image %dx%d (%d KB) %s", cfg.Width, cfg.Height, len(data)/1024, url)
 			}
 			start := time.Now()
-			scores, err := helpers.ParseParticipationImage(data, memberNames, font)
-			log.Printf("parseImages: parsed %d rows in %s", len(scores), time.Since(start).Round(time.Millisecond))
-			results[idx] = imgResult{scores: scores, err: err}
+			res, err := helpers.ParseParticipation(data, memberNames, font)
+			if res != nil {
+				log.Printf("parseImages: parsed %d rows in %s (engine %s, scale %.2f, truncated %v)",
+					len(res.Rows), time.Since(start).Round(time.Millisecond), res.Engine, res.Scale, res.Truncated)
+			}
+			results[idx] = imgResult{res: res, err: err}
 		}(idx, url)
 	}
 	wg.Wait()
 
-	merged = []helpers.ScoreEntry{}
+	out := &ocrOutcome{merged: []helpers.ScoreEntry{}}
 	mergedPos := map[string]int{}
 	for idx, r := range results {
 		if r.err != nil {
 			log.Println("parseImages: failed to process image", imageURLs[idx], r.err)
-			return nil, nil, errors.New("Failed to process one of the images. Please ensure they are valid `small` style GPQ score images.")
+			return nil, errors.New("Failed to process one of the images. Please ensure they are valid `small` style GPQ score images.")
 		}
-		for _, e := range r.scores {
-			if pos, ok := mergedPos[e.Name]; ok {
-				merged[pos].Score = e.Score
-			} else {
-				mergedPos[e.Name] = len(merged)
-				merged = append(merged, e)
+		out.truncated = out.truncated || r.res.Truncated
+		for _, d := range r.res.Defects {
+			if len(imageURLs) > 1 {
+				d = fmt.Sprintf("image %d: %s", idx+1, d)
+			}
+			out.defects = append(out.defects, d)
+		}
+		for _, e := range r.res.Rows {
+			key := e.Name // reconciled member when matched, raw decode otherwise
+			pos, seen := mergedPos[key]
+			switch {
+			case !seen:
+				mergedPos[key] = len(out.merged)
+				out.merged = append(out.merged, e)
+			case out.merged[pos].Score != e.Score:
+				out.conflicts = append(out.conflicts, fmt.Sprintf("`%s`: %d vs %d (image %d)",
+					key, out.merged[pos].Score, e.Score, idx+1))
 			}
 		}
 	}
 
-	return merged, collectUnmatchedScores(merged, activeSet), nil
+	out.unmatched = collectUnmatched(out.merged)
+	return out, nil
+}
+
+// collectUnmatched returns the entries that did not reconcile onto a tracked
+// character, preserving parsed order.
+func collectUnmatched(entries []helpers.ScoreEntry) []helpers.ScoreEntry {
+	unmatched := make([]helpers.ScoreEntry, 0)
+	for _, e := range entries {
+		if !e.Matched {
+			unmatched = append(unmatched, e)
+		}
+	}
+	return unmatched
 }
 
 // runParseImages OCRs the given images and edits the deferred interaction
 // response with the FULL annotated row set (every parsed row marked "tracked"
 // or "NEW" - never an unmatched-only view) plus the gpq_scores.json file.
 func runParseImages(r *reply, imageURLs []string) {
-	merged, unmatched, err := ocrImagesToScores(imageURLs)
+	oc, err := ocrImagesToScores(imageURLs)
 	if err != nil {
 		r.Edit(err.Error())
 		return
 	}
 
-	out, err := marshalOrderedScores(merged)
+	out, err := marshalOrderedScores(oc.merged)
 	if err != nil {
 		log.Println("parseImages: failed to marshal result:", err)
 		r.Edit("Internal error building the JSON result.")
@@ -139,16 +178,17 @@ func runParseImages(r *reply, imageURLs []string) {
 	}
 
 	msg := fmt.Sprintf("Parsed %d row(s) from %d image(s): %d tracked, %d NEW.",
-		len(merged), len(imageURLs), len(merged)-len(unmatched), len(unmatched))
+		len(oc.merged), len(imageURLs), len(oc.merged)-len(oc.unmatched), len(oc.unmatched))
+	msg += ocrWarnings(oc)
 	// Non-fatal validation: scores should be in descending order. If not, warn
 	// but still attach the output so the user can inspect/correct it.
-	if idx := firstDescendingViolation(merged); idx >= 0 {
+	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
 		msg += "\n:warning: Scores are not in descending order (`" +
-			merged[idx-1].Name + "`: " + strconv.Itoa(merged[idx-1].Score) + " -> `" +
-			merged[idx].Name + "`: " + strconv.Itoa(merged[idx].Score) +
+			oc.merged[idx-1].Name + "`: " + strconv.Itoa(oc.merged[idx-1].Score) + " -> `" +
+			oc.merged[idx].Name + "`: " + strconv.Itoa(oc.merged[idx].Score) +
 			"). The output may be incorrect; please verify."
 	}
-	r.EditWithTable(msg, formatAnnotatedScoresTable(merged, trackedSetOf(merged, unmatched)), "parsed_scores.txt",
+	r.EditWithTable(msg, formatAnnotatedScoresTable(oc.merged, trackedSetOf(oc.merged, oc.unmatched)), "parsed_scores.txt",
 		&discordgo.File{
 			Name:        "gpq_scores.json",
 			ContentType: "application/json",
@@ -156,14 +196,32 @@ func runParseImages(r *reply, imageURLs []string) {
 		})
 }
 
-func collectUnmatchedScores(entries []helpers.ScoreEntry, activeSet map[string]bool) []helpers.ScoreEntry {
-	unmatched := make([]helpers.ScoreEntry, 0)
-	for _, entry := range entries {
-		if !activeSet[entry.Name] {
-			unmatched = append(unmatched, entry)
-		}
+// ocrWarnings renders the truncation/conflict/defect warnings of an OCR
+// outcome (empty string when clean). Lists are capped so the reply stays
+// within Discord's content limits.
+func ocrWarnings(oc *ocrOutcome) string {
+	msg := ""
+	if oc.truncated {
+		msg += "\n:warning: The parse hit its time limit - results may be incomplete. Try again or crop the screenshot."
 	}
-	return unmatched
+	if len(oc.conflicts) > 0 {
+		msg += "\n:warning: Conflicting scores for the same character across images (kept the first, please verify):"
+		msg += "\n- " + strings.Join(capList(oc.conflicts, 5), "\n- ")
+	}
+	if len(oc.defects) > 0 {
+		msg += "\n:warning: Parse anomalies:"
+		msg += "\n- " + strings.Join(capList(oc.defects, 5), "\n- ")
+	}
+	return msg
+}
+
+// capList truncates a list to n items, appending a "... and X more" marker.
+func capList(items []string, n int) []string {
+	if len(items) <= n {
+		return items
+	}
+	out := append([]string{}, items[:n]...)
+	return append(out, fmt.Sprintf("... and %d more", len(items)-n))
 }
 
 // firstDescendingViolation returns the index of the first entry whose score is

@@ -7,21 +7,20 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
-func TestCollectUnmatchedScoresPreservesParsedOrderAndScores(t *testing.T) {
+func TestCollectUnmatchedPreservesParsedOrderAndScores(t *testing.T) {
 	entries := []helpers.ScoreEntry{
-		{Name: "MissingFirst", Score: 123456},
-		{Name: "ActiveCharacter", Score: 100000},
-		{Name: "MissingSecond", Score: 98765},
+		{Name: "MissingFirst", RawName: "MissingFirst", Score: 123456},
+		{Name: "ActiveCharacter", RawName: "ActiveCharacter", Score: 100000, Matched: true},
+		{Name: "MissingSecond", RawName: "MissingSecond", Score: 98765},
 	}
-	activeSet := map[string]bool{"ActiveCharacter": true}
 
-	got := collectUnmatchedScores(entries, activeSet)
+	got := collectUnmatched(entries)
 
 	if len(got) != 2 {
-		t.Fatalf("collectUnmatchedScores returned %d entries, want 2", len(got))
+		t.Fatalf("collectUnmatched returned %d entries, want 2", len(got))
 	}
 	if got[0] != entries[0] || got[1] != entries[2] {
-		t.Fatalf("collectUnmatchedScores returned %#v, want %#v then %#v", got, entries[0], entries[2])
+		t.Fatalf("collectUnmatched returned %#v, want %#v then %#v", got, entries[0], entries[2])
 	}
 }
 

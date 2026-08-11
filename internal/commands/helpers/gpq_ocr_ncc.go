@@ -47,6 +47,12 @@ const (
 	// window chrome (frame lines, scrollbar tracks), not glyphs; they are
 	// removed from the segmentation planes so row bands stay separable.
 	gpqNCCMaxRun1x = 14
+	// gpqNCCMaxRunH1x: the horizontal counterpart (frame lines, separators,
+	// button borders). Much larger than the vertical cap because halo
+	// blending can bridge a whole word into one horizontal run - the longest
+	// legitimate word run (a 13-glyph name) stays well under this at any
+	// scale, while window-wide chrome lines exceed it.
+	gpqNCCMaxRunH1x = 110
 	// gpqNCCDigitSkipInk1x: a digits-only decode that leaves more than this
 	// much core ink (in 1x-equivalent pixels) unexplained probably dropped a
 	// digit - a wrong score is worse than a missed row, so it is discarded.
@@ -109,6 +115,7 @@ func buildNCCPlane(img image.Image, scale float64) *nccPlane {
 		loose[y] = looseRow
 	}
 	clearLongVerticalRuns(loose, scalePx(gpqNCCMaxRun1x, scale))
+	clearLongHorizontalRuns(loose, scalePx(gpqNCCMaxRunH1x, scale))
 	p.loose = loose
 
 	p.integ = make([]float64, (w+1)*(h+1))
@@ -157,6 +164,31 @@ func clearLongVerticalRuns(grid [][]bool, maxRun int) {
 			if y-y0 > maxRun {
 				for yy := y0; yy < y; yy++ {
 					grid[yy][x] = false
+				}
+			}
+		}
+	}
+}
+
+// clearLongHorizontalRuns clears ink pixels belonging to horizontal runs
+// longer than maxRun: no word is that wide, so such runs are window chrome
+// (frame lines, separators) that would otherwise merge row bands or inject
+// phantom bands into the pitch model.
+func clearLongHorizontalRuns(grid [][]bool, maxRun int) {
+	for _, row := range grid {
+		w := len(row)
+		for x := 0; x < w; {
+			if !row[x] {
+				x++
+				continue
+			}
+			x0 := x
+			for x < w && row[x] {
+				x++
+			}
+			if x-x0 > maxRun {
+				for xx := x0; xx < x; xx++ {
+					row[xx] = false
 				}
 			}
 		}
@@ -550,14 +582,22 @@ func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre
 // When guardInk is true, a decode that leaves more than maxSkipInk core-ink
 // pixels unexplained returns "" instead - used for score cells, where a
 // dropped digit silently corrupts the value.
-func nccDecodeSpan(p *nccPlane, f *grayFont, x0, x1, y0, y1 int, loosePre []int, insertPenalty int, guardInk bool) string {
+func nccDecodeSpan(p *nccPlane, f *grayFont, x0, x1, y0, y1 int, loosePre []int, insertPenalty int, guardInk bool, clock *parseClock) string {
+	text, _, _ := nccDecodeSpanCov(p, f, x0, x1, y0, y1, loosePre, insertPenalty, guardInk, clock)
+	return text
+}
+
+// nccDecodeSpanCov is nccDecodeSpan additionally reporting how much of the
+// span's core ink the accepted glyphs explain (explained, total pixels).
+// FAILS CLOSED on clock expiry: returns "" rather than a partial word.
+func nccDecodeSpanCov(p *nccPlane, f *grayFont, x0, x1, y0, y1 int, loosePre []int, insertPenalty int, guardInk bool, clock *parseClock) (string, int, int) {
 	n := x1 - x0
 	if n <= 0 {
-		return ""
+		return "", 0, 0
 	}
 	thr, thrStrong, ok := p.spanCoreThreshold(x0, x1, y0, y1)
 	if !ok {
-		return ""
+		return "", 0, 0
 	}
 	tightPre := p.spanCorePrefix(x0, x1, y0, y1, thr)
 	strongPre := p.spanCorePrefix(x0, x1, y0, y1, thrStrong)
@@ -613,8 +653,10 @@ func nccDecodeSpan(p *nccPlane, f *grayFont, x0, x1, y0, y1 int, loosePre []int,
 		if !candCol[i] || looseCol(x0+i) == 0 {
 			continue
 		}
-		if deadlineExceeded() {
-			return ""
+		if clock.exceeded() {
+			// Fail closed: an expired deadline must never yield a partial
+			// word that could reconcile onto the wrong member.
+			return "", 0, tightPre[n]
 		}
 		for _, cand := range nccCandidatesAt(p, f, x0+i, y0, y1, loosePre, tightPre, x0, x1) {
 			j := i + cand.w
@@ -650,21 +692,20 @@ func nccDecodeSpan(p *nccPlane, f *grayFont, x0, x1, y0, y1 int, loosePre []int,
 			}
 		}
 	}
-	if guardInk {
-		skippedInk := 0
-		for c := 0; c < n; c++ {
-			if !covered[c] {
-				skippedInk += tightPre[c+1] - tightPre[c]
-			}
+	totalInk := tightPre[n]
+	skippedInk := 0
+	for c := 0; c < n; c++ {
+		if !covered[c] {
+			skippedInk += tightPre[c+1] - tightPre[c]
 		}
-		if skippedInk > int(float64(gpqNCCDigitSkipInk1x)*f.scale*f.scale) {
-			return ""
-		}
+	}
+	if guardInk && skippedInk > int(float64(gpqNCCDigitSkipInk1x)*f.scale*f.scale) {
+		return "", totalInk - skippedInk, totalInk
 	}
 	for l, r := 0, len(runes)-1; l < r; l, r = l+1, r-1 {
 		runes[l], runes[r] = runes[r], runes[l]
 	}
-	return string(runes)
+	return string(runes), totalInk - skippedInk, totalInk
 }
 
 // ── Table location and row parsing over the NCC plane ───────────────────────
@@ -704,7 +745,7 @@ type nccRowShape struct {
 // is the second-to-last numeric one (Flag Race is last); the name span sits
 // two spans left of the first numeric one (Level), which skips sidebar text
 // sharing the band without hardcoding window geometry.
-func sampleRowShape(p *nccPlane, f *grayFont, y0, y1 int, loosePre []int) (nccRowShape, bool) {
+func sampleRowShape(p *nccPlane, f *grayFont, y0, y1 int, loosePre []int, clock *parseClock) (nccRowShape, bool) {
 	s := f.scale
 	ins := nccInsertPenalty(s)
 	spans := bandSpans(loosePre, 0, p.w, scalePx(gpqGapStop, s))
@@ -713,7 +754,7 @@ func sampleRowShape(p *nccPlane, f *grayFont, y0, y1 int, loosePre []int) (nccRo
 	}
 	digitIdx := []int{}
 	for si, sp := range spans {
-		text := nccDecodeSpan(p, f, sp[0], sp[1], y0, y1, loosePre, ins, false)
+		text := nccDecodeSpan(p, f, sp[0], sp[1], y0, y1, loosePre, ins, false, clock)
 		if digitsNCCClass(text) != "" {
 			digitIdx = append(digitIdx, si)
 		}
@@ -740,24 +781,35 @@ func sampleRowShape(p *nccPlane, f *grayFont, y0, y1 int, loosePre []int) (nccRo
 // the glyph templates can never decode, but the rows below it are the game's
 // bitmap font, and their numeric-column structure identifies every column.
 // Bands starting at the pitch estimate's first table row are sampled until
-// enough agree on a shape.
-func locateTableNCC(p *nccPlane, f *grayFont, firstRowY int) tableRegion {
+// enough agree on a shape; when that cut yields too few row shapes (a wrong
+// firstRowY must be recoverable), the whole grid is rescanned from the top.
+func locateTableNCC(p *nccPlane, f *grayFont, firstRowY int, clock *parseClock) tableRegion {
 	s := f.scale
 	bands := detectRowsGap(p.loose, scalePx(3, s))
-	shapes := []nccRowShape{}
-	tried := 0
-	for _, band := range bands {
-		if firstRowY >= 0 && band[1] <= firstRowY-4 {
-			continue
+	collect := func(fromY int) []nccRowShape {
+		shapes := []nccRowShape{}
+		tried := 0
+		for _, band := range bands {
+			if fromY >= 0 && band[1] <= fromY-4 {
+				continue
+			}
+			if clock.exceeded() || tried >= 6 || len(shapes) >= 3 {
+				break
+			}
+			tried++
+			loosePre := p.bandLoosePrefix(band[0], band[1])
+			if shape, ok := sampleRowShape(p, f, band[0], band[1], loosePre, clock); ok {
+				shapes = append(shapes, shape)
+			}
 		}
-		if deadlineExceeded() || tried >= 6 || len(shapes) >= 3 {
-			break
-		}
-		tried++
-		loosePre := p.bandLoosePrefix(band[0], band[1])
-		if shape, ok := sampleRowShape(p, f, band[0], band[1], loosePre); ok {
-			shapes = append(shapes, shape)
-		}
+		return shapes
+	}
+	shapes := collect(firstRowY)
+	if len(shapes) < 2 && firstRowY >= 0 {
+		// The firstRowY anchor may be wrong (estimated on a different plane):
+		// rescan without it before giving up, and stop trusting it below.
+		shapes = collect(-1)
+		firstRowY = -1
 	}
 	if len(shapes) < 2 {
 		return tableRegion{x1: p.w, nameLimit: scalePx(legacyNameColWidth, s)}
@@ -823,8 +875,10 @@ func locateTableNCC(p *nccPlane, f *grayFont, firstRowY int) tableRegion {
 // parseTableRowsNCC extracts data rows from the region using NCC decoding.
 // With a located header only the name zone and the culvert cell are decoded
 // (the culvert digits are the data-row gate); without one, every word is
-// decoded and the usual 3-numeric-columns gate applies.
-func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames []string) []ScoreEntry {
+// decoded and the usual 3-numeric-columns gate applies. Rows carry the RAW
+// decoded name - reconciliation against the roster happens once, after
+// engine arbitration, so the parse itself never depends on the roster.
+func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, clock *parseClock) []parsedRow {
 	s := f.scale
 	fDigits := f.digitsOnly()
 	ins := nccInsertPenalty(s)
@@ -846,8 +900,8 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 	culHi := region.x0 + region.culvertX1 + scalePx(12, s)
 
 	type rowResult struct {
-		ok          bool
-		name, score string
+		ok  bool
+		row parsedRow
 	}
 	results := make([]rowResult, len(bands))
 	var wg sync.WaitGroup
@@ -855,7 +909,7 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 		wg.Add(1)
 		go func(bandIdx int, band [2]int) {
 			defer wg.Done()
-			if deadlineExceeded() {
+			if clock.exceeded() {
 				return
 			}
 			y0 := region.headerY1 + band[0]
@@ -867,6 +921,7 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 			}
 
 			score := ""
+			scoreExpl, scoreInk := 0, 0
 			if region.found {
 				bestOv, cw := 0, -1
 				for si, sp := range spans {
@@ -879,7 +934,9 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 				if cw < 0 {
 					return
 				}
-				score = keepDigits(nccDecodeSpan(p, fDigits, spans[cw][0], spans[cw][1], y0, y1, loosePre, insDig, true))
+				var text string
+				text, scoreExpl, scoreInk = nccDecodeSpanCov(p, fDigits, spans[cw][0], spans[cw][1], y0, y1, loosePre, insDig, true, clock)
+				score = keepDigits(text)
 				if score == "" {
 					return
 				}
@@ -889,7 +946,7 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 				// so the value cannot carry a letter confusion.
 				digitSpans := [][2]int{}
 				for _, sp := range spans {
-					text := nccDecodeSpan(p, f, sp[0], sp[1], y0, y1, loosePre, ins, false)
+					text := nccDecodeSpan(p, f, sp[0], sp[1], y0, y1, loosePre, ins, false, clock)
 					if digitsNCCClass(text) != "" {
 						digitSpans = append(digitSpans, sp)
 					}
@@ -898,7 +955,9 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 					return
 				}
 				cul := digitSpans[len(digitSpans)-2]
-				score = keepDigits(nccDecodeSpan(p, fDigits, cul[0], cul[1], y0, y1, loosePre, insDig, true))
+				var text string
+				text, scoreExpl, scoreInk = nccDecodeSpanCov(p, fDigits, cul[0], cul[1], y0, y1, loosePre, insDig, true, clock)
+				score = keepDigits(text)
 				if score == "" {
 					return
 				}
@@ -912,25 +971,30 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 			if nx1 > nameLimitAbs {
 				nx1 = nameLimitAbs
 			}
-			name, ellipsis := cleanDecodedName(nccDecodeSpan(p, f, sp0[0], nx1, y0, y1, loosePre, ins, false))
+			rawText, nameExpl, nameInk := nccDecodeSpanCov(p, f, sp0[0], nx1, y0, y1, loosePre, ins, false, clock)
+			name, ellipsis := cleanDecodedName(rawText)
 			if name == "" || digitsScaled(name) != "" {
 				return
 			}
 			// The name span running into the column limit is truncation
 			// evidence even when the ellipsis dots failed to decode.
 			ellipsis = ellipsis || sp0[1] >= nameLimitAbs-scalePx(nameEdgeEvidencePx, s)
-			results[bandIdx] = rowResult{ok: true, name: reconcileName(name, ellipsis, memberNames), score: score}
+			results[bandIdx] = rowResult{ok: true, row: parsedRow{
+				rawName:  name,
+				ellipsis: ellipsis,
+				score:    score,
+				v:        inkFraction(nameExpl+scoreExpl, nameInk+scoreInk),
+				bandY0:   y0,
+			}}
 		}(bandIdx, band)
 	}
 	wg.Wait()
 
-	names := []string{}
-	scores := []string{}
+	rows := []parsedRow{}
 	for _, r := range results {
 		if r.ok {
-			names = append(names, r.name)
-			scores = append(scores, r.score)
+			rows = append(rows, r.row)
 		}
 	}
-	return mergeScoresWithNames(scores, names)
+	return rows
 }
