@@ -20,6 +20,8 @@ import (
 )
 
 func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r := deferReply(s, i, false)
+
 	// Parse discord param character-name
 	charName := ""
 	date := ""
@@ -58,13 +60,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if date != "" {
 		d, err := time.Parse(time.DateOnly, date) // YYYY-MM-DD
 		if err != nil {
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "Invalid date format, should be YYYY-MM-DD",
-					Flags:   discordgo.MessageFlagsEphemeral,
-				},
-			})
+			r.Edit("Invalid date format, should be YYYY-MM-DD")
 			return
 		}
 		date = cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)
@@ -82,6 +78,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	stmt, err := db.DB.Prepare(sql)
 	if err != nil {
 		log.Println("Failed prepare find characters", err)
+		r.Edit("Something went wrong querying the database.")
 		return
 	}
 	args := []any{}
@@ -91,6 +88,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	rows, err := stmt.Query(args...)
 	if err != nil {
 		log.Println("Query at find characters", err)
+		r.Edit("Something went wrong querying the database.")
 		return
 	}
 	count := 0
@@ -134,13 +132,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			msg = "You haven't registered a MapleStory character yet!\n" +
 				"Type `/register` and enter your character name (for example `/register character-name:HTomer`), then try again."
 		}
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: msg,
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
+		r.Edit(msg)
 		return
 	}
 
@@ -150,14 +142,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	if _, ok := characters[charName]; count == 0 || (count > 1 && charName == "") || (!ok && charName != "") {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: choicesMsg,
-				Files:   []*discordgo.File{{Name: "message.csv", Reader: strings.NewReader(choices)}},
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
+		r.Edit(choicesMsg, &discordgo.File{Name: "message.csv", Reader: strings.NewReader(choices)})
 		return
 	} else if ok {
 		lastSeenCharID = characters[charName].id
@@ -175,6 +160,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	stmt, err = db.DB.Prepare(sql)
 	if err != nil {
 		log.Println("Failed 1st prepare at culvert command", err)
+		r.Edit("Something went wrong querying the database.")
 		return
 	}
 	defer stmt.Close()
@@ -185,6 +171,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	rows, err = stmt.Query(args...)
 	if err != nil {
 		log.Println("Query at culvert command", err)
+		r.Edit("Something went wrong querying the database.")
 		return
 	}
 	defer rows.Close()
@@ -198,13 +185,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	if len(chartData) == 0 {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "No data on " + lastSeenCharName + "...",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
+		r.Edit("No data on " + lastSeenCharName + "...")
 		return
 	}
 	slices.Reverse(chartData)
@@ -212,13 +193,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	jsonData, err := json.Marshal(chartData)
 	if err != nil {
 		log.Println("json at culvert command failed?", err)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "Something and something broko...",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
+		r.Edit("Something and something broko...")
 		return
 	}
 
@@ -228,19 +203,11 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	// Sample below
 	// jsonData := []byte(`[{"label":"2/26","score":0},{"label":"3/5","score":1233},{"label":"3/12","score":8000},{"label":"3/19","score":8100},{"label":"3/26","score":5600},{"label":"4/2","score":5500},{"label":"4/9","score":25000}]`)
-	r, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker?y-axis-start-at-0="+strconv.FormatBool(yAxisStartAt0), "application/json", bytes.NewBuffer(jsonData))
-	if err != nil || r.StatusCode != http.StatusOK {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "Looks like my `chartmaker` component is broken... ",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
-	} else {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: helpers.GenerateDiscordCulvertOutput(r.Body, lastSeenCharName, date, statistics),
-		})
+	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker?y-axis-start-at-0="+strconv.FormatBool(yAxisStartAt0), "application/json", bytes.NewBuffer(jsonData))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		r.Edit("Looks like my `chartmaker` component is broken... ")
+		return
 	}
+	defer resp.Body.Close()
+	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, lastSeenCharName, date, statistics))
 }

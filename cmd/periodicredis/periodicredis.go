@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
@@ -9,8 +8,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
@@ -29,15 +28,15 @@ func main() {
 		log.Fatalln("Cannot open discord session", err)
 	}
 	defer s.Close()
+	// Backstop refresher: the bot process refreshes the member cache itself
+	// (on Ready and lazily); this keeps the cache warm even when the bot is
+	// wedged.
 	go func() {
 		for {
-			result, err := helpers.FetchAllMembers(s)
-			if err != nil {
-				log.Println("Failed to fetch members periodically")
+			if err := helpers.RefreshMemberCache(s); err != nil {
+				log.Println("Failed to fetch members periodically:", err)
 			} else {
-				resultArr, _ := json.Marshal(result)
-				err = apiredis.DATA_DISCORD_MEMBERS.Set(apiredis.RedisDB, string(resultArr))
-				log.Println("Set", apiredis.DATA_DISCORD_MEMBERS.Name, err)
+				log.Println("Set", apiredis.DATA_DISCORD_MEMBERS.Name)
 			}
 			time.Sleep(time.Minute * 30)
 		}

@@ -2,7 +2,6 @@ package commands
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -40,7 +39,11 @@ func collectImageURLs(msg *discordgo.Message) []string {
 
 // parseImagesFromMessage is the message context menu version of /parse-images:
 // right click a message with GPQ score screenshots -> Apps -> Parse Images.
+// Submitter-gated, matching the docs.
 func parseImagesFromMessage(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !requireSubmitPermission(s, i) {
+		return
+	}
 	r := deferReply(s, i, false)
 
 	msg := targetMessage(s, i)
@@ -64,6 +67,7 @@ func parseImagesFromMessage(s *discordgo.Session, i *discordgo.InteractionCreate
 // the image attachments are OCR'd and the result is submitted. Scores go to
 // the current culvert week; existing scores are never overwritten and absent
 // characters are never zero-filled - use /submit-scores for corrections.
+// Unknown parsed names are auto-tracked (the /submit-scores default).
 func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !requireSubmitPermission(s, i) {
 		return
@@ -84,7 +88,7 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, false, false)
+	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, false, false, true)
 }
 
 // scoresFromMessage fills scores from a message: a pre-parsed .txt/.json
@@ -139,13 +143,6 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 		r.Edit("Nothing submitted: the images disagree on some characters' scores:\n- " +
 			strings.Join(capList(oc.conflicts, 10), "\n- ") +
 			"\nRun Parse Images on the message, verify the JSON, then submit that instead.")
-		return false
-	}
-	if len(oc.unmatched) > 0 {
-		trackedSet := trackedSetOf(oc.merged, oc.unmatched)
-		msg := fmt.Sprintf("Nothing submitted: %d of %d parsed characters matched a tracked character, %d did not (marked NEW below). Correct the images or track them, then resubmit.",
-			len(oc.merged)-len(oc.unmatched), len(oc.merged), len(oc.unmatched))
-		r.EditWithTable(msg, formatAnnotatedScoresTable(oc.merged, trackedSet), "parsed_scores.txt")
 		return false
 	}
 	if idx := firstDescendingViolation(oc.merged); idx >= 0 {

@@ -18,6 +18,8 @@ import (
 )
 
 func exportcsv(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r := deferReply(s, i, false)
+
 	// Parse discord param character-name
 	date := ""
 	weeks := int64(4)
@@ -33,26 +35,14 @@ func exportcsv(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	rawDate, err := helpers.GetLatestResetDate(db.DB)
 	if err != nil {
 		log.Println("exportcsv", err)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "Failed to retrieve latest culvert reset date. See server logs.",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
+		r.Edit("Failed to retrieve latest culvert reset date. See server logs.")
 		return
 	}
 	// Validate date format
 	if date != "" {
 		rawDate, err = time.Parse(time.DateOnly, date) // YYYY-MM-DD
 		if err != nil {
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "Invalid date format, should be YYYY-MM-DD",
-					Flags:   discordgo.MessageFlagsEphemeral,
-				},
-			})
+			r.Edit("Invalid date format, should be YYYY-MM-DD")
 			return
 		}
 		rawDate = helpers.GetCulvertResetDate(rawDate)
@@ -70,12 +60,7 @@ func exportcsv(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	chars, err := helpers.GetActiveCharacters(apiredis.RedisDB, db.DB)
 	if err != nil {
 		log.Println("export csv get active chars failed", err)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "Export csv command failed, could not get active characters",
-			},
-		})
+		r.Edit("Export csv command failed, could not get active characters")
 		return
 	}
 
@@ -100,12 +85,7 @@ func exportcsv(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err = stmt.Query(db.DB, &dest)
 	if err != nil {
 		log.Println("export csv select stmt failed", err)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "Export csv failed getting culvert data from db. See server logs.",
-			},
-		})
+		r.Edit("Export csv failed getting culvert data from db. See server logs.")
 		return
 	}
 
@@ -131,12 +111,7 @@ func exportcsv(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	w.Flush()
 	if err != nil {
 		log.Println("export csv write charNamesHeader", err)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "Export csv failed to write character names header. See server logs.",
-			},
-		})
+		r.Edit("Export csv failed to write character names header. See server logs.")
 		return
 	}
 
@@ -159,27 +134,14 @@ func exportcsv(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		w.Flush()
 		if err != nil {
 			log.Println("export csv write culvertData at "+strconv.Itoa(n), err)
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "Export csv failed to write character names header. See server logs.",
-				},
-			})
+			r.Edit("Export csv failed to write character names header. See server logs.")
 			return
 		}
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "Export for " + strconv.Itoa(int(weeks)) + " weeks on " + originalInputDate,
-			Files: []*discordgo.File{
-				{
-					Name:        "export_" + originalInputDate + ".csv",
-					ContentType: "text/csv",
-					Reader:      bytesBuffer,
-				},
-			},
-		},
+	r.Edit("Export for "+strconv.Itoa(int(weeks))+" weeks on "+originalInputDate, &discordgo.File{
+		Name:        "export_" + originalInputDate + ".csv",
+		ContentType: "text/csv",
+		Reader:      bytesBuffer,
 	})
 }

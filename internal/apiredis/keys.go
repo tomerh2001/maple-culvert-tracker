@@ -24,6 +24,11 @@ var (
 	DATA_FIXES_SUN_TO_WED = redisInternalKey{"DATA_FIXES_SUN_TO_WED", EditableTypeNone, false}
 
 	DATA_DISCORD_MEMBERS = redisInternalKey{"DATA_DISCORD_MEMBERS", EditableTypeNone, false}
+	// DATA_DISCORD_MEMBERS_UPDATED_AT holds the RFC3339 time of the last
+	// successful member cache refresh; DATA_DISCORD_MEMBERS_LAST_ERROR holds
+	// the last refresh failure (cleared to "" on success).
+	DATA_DISCORD_MEMBERS_UPDATED_AT = redisInternalKey{"DATA_DISCORD_MEMBERS_UPDATED_AT", EditableTypeNone, false}
+	DATA_DISCORD_MEMBERS_LAST_ERROR = redisInternalKey{"DATA_DISCORD_MEMBERS_LAST_ERROR", EditableTypeNone, false}
 
 	DATA_DISCORD_NEW_FEATURES_ANNOUNCEMENT_VERSION = redisInternalKey{"DATA_DISCORD_NEW_FEATURES_ANNOUNCEMENT_VERSION", EditableTypeNone, false}
 )
@@ -53,4 +58,6 @@ func init() {
 	KeysMap[DATA_DB_VERSION.Name] = DATA_DB_VERSION
 	KeysMap[DATA_FIXES_SUN_TO_WED.Name] = DATA_FIXES_SUN_TO_WED
 	KeysMap[DATA_DISCORD_MEMBERS.Name] = DATA_DISCORD_MEMBERS
+	KeysMap[DATA_DISCORD_MEMBERS_UPDATED_AT.Name] = DATA_DISCORD_MEMBERS_UPDATED_AT
+	KeysMap[DATA_DISCORD_MEMBERS_LAST_ERROR.Name] = DATA_DISCORD_MEMBERS_LAST_ERROR
 }

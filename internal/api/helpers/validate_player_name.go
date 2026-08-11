@@ -5,9 +5,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
+
+// rankingsClient bounds every official-rankings lookup so a slow Nexon API
+// can never hang an interaction.
+var rankingsClient = &http.Client{Timeout: 10 * time.Second}
 
 func FetchCharacterData(name string, region string) (*data.PlayerRank, error) {
 	if region != "na" && region != "eu" {
@@ -25,11 +30,11 @@ func FetchCharacterData(name string, region string) (*data.PlayerRank, error) {
 	q.Add("character_name", name)
 	req.URL.RawQuery = q.Encode()
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := rankingsClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	rawbody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err

@@ -53,7 +53,12 @@ func (MapleController) POSTCulvert(c *gin.Context) {
 	}
 
 	if len(changedIDs) > 0 {
-		go helpers.AnnounceSubmission(DiscordSession, db.DB, apiredis.RedisDB, thisWeek, changedIDs)
+		// Fire-and-forget: the HTTP path has no receipt to attach status to.
+		go func() {
+			if err := helpers.AnnounceSubmission(DiscordSession, db.DB, apiredis.RedisDB, thisWeek, changedIDs); err != nil {
+				log.Println("POSTCulvert: weekly announcement:", err)
+			}
+		}()
 	}
 
 	c.AbortWithStatusJSON(http.StatusOK, gin.H{})

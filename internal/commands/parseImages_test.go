@@ -48,22 +48,3 @@ func TestFormatAnnotatedScoresTableShowsAllRowsWithStatusInOrder(t *testing.T) {
 		t.Errorf("tracked row missing from annotated table:\n%s", got)
 	}
 }
-
-func TestSortedScoreEntriesIncludesNamesAndScoresDeterministically(t *testing.T) {
-	scores := map[string]int{
-		"MissingSecond": 98765,
-		"MissingFirst":  123456,
-	}
-
-	got := sortedScoreEntries(scores)
-
-	if len(got) != 2 {
-		t.Fatalf("sortedScoreEntries returned %d entries, want 2", len(got))
-	}
-	if got[0].Name != "MissingFirst" || got[0].Score != 123456 {
-		t.Errorf("first entry = %#v, want MissingFirst with score 123456", got[0])
-	}
-	if got[1].Name != "MissingSecond" || got[1].Score != 98765 {
-		t.Errorf("second entry = %#v, want MissingSecond with score 98765", got[1])
-	}
-}

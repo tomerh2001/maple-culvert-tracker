@@ -178,6 +178,30 @@ var Commands = []*discordgo.ApplicationCommand{
 				Name:        "zero-missing",
 				Description: "Insert a 0 for tracked characters absent from the input (default off)",
 			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionBoolean,
+				Name:        "auto-track-new",
+				Description: "Auto-track unknown parsed names and record their scores (default on)",
+			},
+		},
+	},
+	{
+		Name:        "track-characters",
+		Description: "Bulk-track characters by name (unlinked; members can /register to claim them)",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "names",
+				Description: "Character names, comma separated (e.g. Alice,Bob,Carol)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "names-attachment",
+				Description: "A .txt file with one character name per line (or comma separated)",
+			},
 		},
 	},
 	{
@@ -250,6 +274,12 @@ var Commands = []*discordgo.ApplicationCommand{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "date",
 				Description: "Culvert week (YYYY-MM-DD, a Wednesday). Defaults to this week",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionBoolean,
+				Name:        "create-if-missing",
+				Description: "Track the character (unlinked) if it isn't tracked yet (default off)",
 			},
 		},
 	},

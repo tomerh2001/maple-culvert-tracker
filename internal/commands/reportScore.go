@@ -15,8 +15,9 @@ import (
 // reportScore lets a member report their own culvert score for the current
 // week - only when an admin enabled self reporting via /config.
 func reportScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r := deferReply(s, i, true)
 	if apiredis.OPTIONAL_CONF_ALLOW_SELF_REPORT.GetWithDefault(apiredis.RedisDB, "false") != "true" {
-		registerReply(s, i, "Self-reporting is disabled on this server. Scores are submitted by the designated submitters.")
+		r.Edit("Self-reporting is disabled on this server. Scores are submitted by the designated submitters.")
 		return
 	}
 
@@ -31,33 +32,33 @@ func reportScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 	if score < 0 {
-		registerReply(s, i, "Please provide your culvert score, e.g. `/report-score score:123456`")
+		r.Edit("Please provide your culvert score, e.g. `/report-score score:123456`")
 		return
 	}
 
 	callerID := i.Member.User.ID
-	rows, err := db.DB.Query(
+	dbRows, err := db.DB.Query(
 		`SELECT id, maple_character_name FROM characters WHERE discord_user_id = $1 ORDER BY id`, callerID)
 	if err != nil {
 		log.Println("report-score: character lookup failed:", err)
-		registerReply(s, i, "Something went wrong. Please try again later.")
+		r.Edit("Something went wrong. Please try again later.")
 		return
 	}
-	defer rows.Close()
+	defer dbRows.Close()
 	type ch struct {
 		id   int64
 		name string
 	}
 	chars := []ch{}
-	for rows.Next() {
+	for dbRows.Next() {
 		c := ch{}
-		if err := rows.Scan(&c.id, &c.name); err == nil {
+		if err := dbRows.Scan(&c.id, &c.name); err == nil {
 			chars = append(chars, c)
 		}
 	}
 
 	if len(chars) == 0 {
-		registerReply(s, i, "You haven't registered a MapleStory character yet!\nType `/register` and enter your character name first, then report your score.")
+		r.Edit("You haven't registered a MapleStory character yet!\nType `/register` and enter your character name first, then report your score.")
 		return
 	}
 	target := chars[0]
@@ -67,7 +68,7 @@ func reportScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			for _, c := range chars {
 				names = append(names, "`"+c.name+"`")
 			}
-			registerReply(s, i, "You have multiple characters ("+strings.Join(names, ", ")+"). Add `character-name:` to pick one.")
+			r.Edit("You have multiple characters (" + strings.Join(names, ", ") + "). Add `character-name:` to pick one.")
 			return
 		}
 		found := false
@@ -79,7 +80,7 @@ func reportScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 		}
 		if !found {
-			registerReply(s, i, "`"+charName+"` isn't one of your registered characters.")
+			r.Edit("`" + charName + "` isn't one of your registered characters.")
 			return
 		}
 	}
@@ -91,10 +92,11 @@ func reportScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		 ON CONFLICT (culvert_date, character_id) DO UPDATE SET score = $3`,
 		target.id, weekStr, score); err != nil {
 		log.Println("report-score: upsert failed:", err)
-		registerReply(s, i, "Something went wrong saving your score. Please try again later.")
+		r.Edit("Something went wrong saving your score. Please try again later.")
 		return
 	}
 
-	go apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, []int64{target.id})
-	registerReply(s, i, "Recorded **"+apihelpers.FormatThousands(score)+"** for `"+target.name+"` (week of "+weekStr+"). :white_check_mark:")
+	msg := "Recorded **" + apihelpers.FormatThousands(score) + "** for `" + target.name + "` (week of " + weekStr + "). :white_check_mark:"
+	msg += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, []int64{target.id}))
+	r.Edit(msg)
 }

@@ -14,6 +14,8 @@ import (
 // registerCharacter links a MapleStory character to a Discord account:
 // your own by default, or someone else's via user:@member (submitters only).
 func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r := deferReply(s, i, true)
+
 	characterName := ""
 	skipNameCheck := false
 	callerID := i.Member.User.ID
@@ -31,24 +33,27 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 	if characterName == "" {
-		registerReply(s, i, "Please provide the character name: `/register character-name:YourCharacter`")
+		r.Edit("Please provide the character name: `/register character-name:YourCharacter`")
 		return
 	}
 
 	forOther := targetID != callerID
 	if forOther && !canSubmitScores(i) {
-		registerReply(s, i, "Registering a character for someone else needs submitter permissions. They can register themselves with `/register character-name:TheirCharacter`.")
+		r.Edit("Registering a character for someone else needs submitter permissions. They can register themselves with `/register character-name:TheirCharacter`.")
 		return
 	}
 
 	// Normalise capitalisation against the official rankings when possible.
+	// The check is ADVISORY: a lookup failure or miss never blocks
+	// registration, it only adds a warning to the receipt.
+	warning := ""
 	if !skipNameCheck {
 		charData, err := helpers.FetchCharacterData(characterName, apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, "na"))
 		if err != nil || charData == nil {
-			registerReply(s, i, "I couldn't find `"+characterName+"` on the official MapleStory rankings. Double-check the spelling and try again. (If the rankings are just outdated, add `skip-name-check:True`.)")
-			return
+			warning = "\n:warning: I couldn't verify `" + characterName + "` against the official rankings - double-check the spelling (`/rename-character` fixes typos later)."
+		} else {
+			characterName = charData.CharacterName
 		}
-		characterName = charData.CharacterName
 	}
 
 	who := "you"
@@ -67,18 +72,18 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			`INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, $2)`,
 			characterName, targetID); err != nil {
 			log.Println("register: insert failed:", err)
-			registerReply(s, i, "Something went wrong saving the character. Please try again later.")
+			r.Edit("Something went wrong saving the character. Please try again later.")
 			return
 		}
 	case err != nil:
 		log.Println("register: lookup failed:", err)
-		registerReply(s, i, "Something went wrong saving the character. Please try again later.")
+		r.Edit("Something went wrong saving the character. Please try again later.")
 		return
 	case existingOwner == targetID:
-		registerReply(s, i, "`"+characterName+"` is already registered to "+who+". Nothing to do!")
+		r.Edit("`" + characterName + "` is already registered to " + who + ". Nothing to do!" + warning)
 		return
 	case existingOwner != "1" && existingOwner != "2" && existingOwner != "" && !canSubmitScores(i):
-		registerReply(s, i, "`"+characterName+"` is already registered to <@"+existingOwner+">. If that's wrong, ask an admin or submitter to move it with `/register character-name:"+characterName+" user:@the-right-person`.")
+		r.Edit("`" + characterName + "` is already registered to <@" + existingOwner + ">. If that's wrong, ask an admin or submitter to move it with `/register character-name:" + characterName + " user:@the-right-person`.")
 		return
 	default:
 		// Unlinked, or a submitter/admin relinking it to the target.
@@ -86,14 +91,14 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			`UPDATE characters SET discord_user_id = $1 WHERE id = $2`,
 			targetID, existingID); err != nil {
 			log.Println("register: update failed:", err)
-			registerReply(s, i, "Something went wrong saving the character. Please try again later.")
+			r.Edit("Something went wrong saving the character. Please try again later.")
 			return
 		}
 	}
 
 	if forOther {
-		registerReply(s, i, "Done! `"+characterName+"` is now registered to "+who+". :tada:")
+		r.Edit("Done! `" + characterName + "` is now registered to " + who + ". :tada:" + warning)
 		return
 	}
-	registerReply(s, i, "Done! `"+characterName+"` is now registered to you. :tada:\nTry `/culvert` to see your progression once your scores are in.")
+	r.Edit("Done! `" + characterName + "` is now registered to you. :tada:" + warning + "\nTry `/culvert` to see your progression once your scores are in.")
 }

@@ -19,13 +19,7 @@ import (
 )
 
 func culvertMegaChart(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-	if err != nil {
-		log.Println("Failed to respond to interaction", err)
-		return
-	}
+	r := deferReply(s, i, false)
 
 	options := i.ApplicationCommandData().Options
 
@@ -47,10 +41,7 @@ func culvertMegaChart(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	d, err := time.Parse(time.DateOnly, date) // YYYY-MM-DD
 	if err != nil {
-		str := "Invalid date format, should be YYYY-MM-DD"
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: &str,
-		})
+		r.Edit("Invalid date format, should be YYYY-MM-DD")
 		return
 	}
 
@@ -79,19 +70,12 @@ func culvertMegaChart(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err = stmt.Query(db.DB, &dest)
 	if err != nil {
 		log.Println(err)
-		str := "Failed to find all characters' dataset! See server logs."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: &str,
-		},
-		)
+		r.Edit("Failed to find all characters' dataset! See server logs.")
 		return
 	}
 
 	if len(dest) < 1 {
-		str := "There is no data!"
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: &str,
-		})
+		r.Edit(emptyWeekMessage(cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)))
 		return
 	}
 
@@ -149,19 +133,12 @@ func culvertMegaChart(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// json format chartData
 	jsonData, _ := json.Marshal(chartData)
 
-	r, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker-multiple", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil || r.StatusCode != http.StatusOK {
+	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker-multiple", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil || resp.StatusCode != http.StatusOK {
 		log.Println(err)
-		str := "Looks like my `chartmaker` component is broken... See server logs."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: &str,
-		})
-		return
-	} else {
-		defer r.Body.Close()
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Files: []*discordgo.File{{Name: "image.png", Reader: r.Body}},
-		})
+		r.Edit("Looks like my `chartmaker` component is broken... See server logs.")
 		return
 	}
+	defer resp.Body.Close()
+	r.Edit("", &discordgo.File{Name: "image.png", Reader: resp.Body})
 }

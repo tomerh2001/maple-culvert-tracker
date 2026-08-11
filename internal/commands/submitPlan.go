@@ -28,11 +28,14 @@ type submissionPlan struct {
 	Overwritten int                   // existing scores replaced by a submitted value
 	ZeroFilled  int                   // absent characters written as 0 (zero-missing)
 	Conflicts   []scoreConflict       // differing values blocked by the overwrite guard
-	Unmatched   []helpers.ScoreEntry  // submitted names that are not tracked (name-sorted)
+	AutoTrack   []helpers.ScoreEntry  // untracked names to create ('2') and score (name-sorted)
+	Skipped     []helpers.ScoreEntry  // untracked names left unrecorded (name-sorted)
 }
 
 // planSubmission decides which rows a submission writes. Rules:
-//   - submitted names not in tracked land in Unmatched (the caller rejects)
+//   - submitted names not in tracked land in AutoTrack when autoTrack is set
+//     (the caller creates them as unlinked-but-tracked and scores them), else
+//     in Skipped (recorded nowhere, listed on the receipt)
 //   - a value equal to the existing score is a no-op
 //   - ANY differing value - including downgrading a score to 0 - is a conflict
 //     unless overwrite is set (conflicts are all collected, never just the first)
@@ -40,7 +43,7 @@ type submissionPlan struct {
 //     with zeroMissing, absent characters without a score are zero-filled, and
 //     absent characters with a non-zero score are zero-filled only when
 //     overwrite is also set (a conflict otherwise)
-func planSubmission(tracked []trackedScore, submitted map[string]int, overwrite, zeroMissing bool) submissionPlan {
+func planSubmission(tracked []trackedScore, submitted map[string]int, overwrite, zeroMissing, autoTrack bool) submissionPlan {
 	p := submissionPlan{}
 	seen := map[string]bool{}
 	for _, t := range tracked {
@@ -73,12 +76,18 @@ func planSubmission(tracked []trackedScore, submitted map[string]int, overwrite,
 			p.ZeroFilled++
 		}
 	}
+	unmatched := []helpers.ScoreEntry{}
 	for name, score := range submitted {
 		if !seen[name] {
-			p.Unmatched = append(p.Unmatched, helpers.ScoreEntry{Name: name, Score: score})
+			unmatched = append(unmatched, helpers.ScoreEntry{Name: name, Score: score})
 		}
 	}
-	sort.Slice(p.Unmatched, func(a, b int) bool { return p.Unmatched[a].Name < p.Unmatched[b].Name })
+	sort.Slice(unmatched, func(a, b int) bool { return unmatched[a].Name < unmatched[b].Name })
+	if autoTrack {
+		p.AutoTrack = unmatched
+	} else {
+		p.Skipped = unmatched
+	}
 	return p
 }
 
@@ -104,17 +113,6 @@ func formatConflictsTable(conflicts []scoreConflict) string {
 		t.AppendRow(table.Row{c.Name, c.Existing, c.Incoming})
 	}
 	return t.Render()
-}
-
-// countTracked returns how many entries are tracked characters.
-func countTracked(entries []helpers.ScoreEntry, tracked map[string]bool) int {
-	n := 0
-	for _, e := range entries {
-		if tracked[e.Name] {
-			n++
-		}
-	}
-	return n
 }
 
 // trackedSetOf derives the tracked-name set from a full parse and its

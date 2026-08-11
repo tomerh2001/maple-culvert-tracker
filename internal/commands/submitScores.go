@@ -5,12 +5,12 @@ package commands
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -49,6 +49,7 @@ func submitScores(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	culvertDateStr := culvertDate.Format(time.DateOnly)
 	overwriteExisting := false
 	zeroMissing := false
+	autoTrackNew := true
 	messageLink := ""
 	var attachment *discordgo.MessageAttachment
 
@@ -60,6 +61,8 @@ func submitScores(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 		case "message-link":
 			messageLink = v.StringValue()
+		case "auto-track-new":
+			autoTrackNew = v.BoolValue()
 		case "date":
 			culvertDateStr = strings.Trim(v.StringValue(), " ")
 			culvertDate, err = time.Parse(time.DateOnly, culvertDateStr)
@@ -105,7 +108,7 @@ func submitScores(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, overwriteExisting, zeroMissing)
+	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, overwriteExisting, zeroMissing, autoTrackNew)
 }
 
 // scoresFromJSONAttachment downloads and parses a .txt/.json scores file into
@@ -134,15 +137,16 @@ func scoresFromJSONAttachment(attachment *discordgo.MessageAttachment, scores ma
 
 // finalizeSubmitScores runs the shared score submission flow once a scores map
 // (character name -> score) has been parsed from a source: it plans the
-// submission against the tracked roster and existing week data, applies the
-// changes in one transaction and replies with a receipt.
-func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]int, culvertDate time.Time, culvertDateStr string, overwriteExisting, zeroMissing bool) {
+// submission against the tracked roster and existing week data, auto-tracks
+// unknown names (when enabled), applies the changes in one transaction and
+// replies with a receipt.
+func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]int, culvertDate time.Time, culvertDateStr string, overwriteExisting, zeroMissing, autoTrackNew bool) {
 	if len(submitted) == 0 {
 		r.Edit("Nothing was parsed from that input - no changes were made.")
 		return
 	}
 
-	characters, err := helpers.GetActiveCharacters(apiredis.RedisDB, db.DB)
+	characters, rosterMeta, err := helpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB)
 	if err != nil {
 		log.Println("submitScores: Error querying active characters:", err)
 		r.Edit("Internal server error while querying active characters. Please try again later.")
@@ -181,20 +185,7 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]i
 		}
 	}
 
-	plan := planSubmission(tracked, submitted, overwriteExisting, zeroMissing)
-
-	if len(plan.Unmatched) > 0 {
-		trackedSet := make(map[string]bool, len(tracked))
-		for _, t := range tracked {
-			trackedSet[t.Name] = true
-		}
-		entries := sortedScoreEntries(submitted)
-		matched := countTracked(entries, trackedSet)
-		msg := fmt.Sprintf("Nothing submitted: %d of %d parsed characters matched a tracked character, %d did not (marked NEW below). Correct their names or track them, then resubmit.",
-			matched, len(entries), len(plan.Unmatched))
-		r.EditWithTable(msg, formatAnnotatedScoresTable(entries, trackedSet), "parsed_scores.txt")
-		return
-	}
+	plan := planSubmission(tracked, submitted, overwriteExisting, zeroMissing, autoTrackNew)
 
 	if len(plan.Conflicts) > 0 {
 		msg := fmt.Sprintf("%d existing score(s) for %s differ from the submitted values (see conflicts.txt). Set the `overwrite-existing` option to `True` to overwrite them. No changes were made.",
@@ -207,10 +198,49 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]i
 		return
 	}
 
+	autoTracked := []string{}
+	if len(plan.AutoTrack) > 0 {
+		names := make([]string, 0, len(plan.AutoTrack))
+		for _, e := range plan.AutoTrack {
+			names = append(names, e.Name)
+		}
+		created, ids, err := helpers.TrackCharacters(db.DB, names)
+		if err != nil {
+			log.Println("submitScores: auto-track failed:", err)
+			r.Edit("Score submission failed while tracking new characters - no scores were written. See server logs for details.")
+			return
+		}
+		autoTracked = created
+		for _, e := range plan.AutoTrack {
+			id, ok := ids[e.Name]
+			if !ok {
+				log.Println("submitScores: auto-tracked character has no id:", e.Name)
+				continue
+			}
+			plan.Changes = append(plan.Changes, helpers.ScoreChange{CharacterID: id, Score: e.Score})
+			plan.New++
+		}
+	}
+
 	if err := helpers.UpsertCulvertScores(db.DB, culvertDate, plan.Changes); err != nil {
 		log.Println("submitScores: upsert failed:", err)
-		r.Edit("Score submission failed while writing to the database - no partial changes were made. See server logs for details.")
+		r.Edit("Score submission failed while writing to the database - no scores were written. See server logs for details.")
 		return
+	}
+
+	receipt := fmt.Sprintf("Submitted %d scores (%d new, %d overwritten, %d zero-filled) for week %s.",
+		len(plan.Changes), plan.New, plan.Overwritten, plan.ZeroFilled, culvertDateStr)
+	if len(autoTracked) > 0 {
+		receipt += fmt.Sprintf("\nAuto-tracked %d new character(s): %s (members can `/register` to claim them)",
+			len(autoTracked), "`"+strings.Join(capList(autoTracked, 20), "`, `")+"`")
+	}
+	if len(plan.Skipped) > 0 {
+		names := make([]string, 0, len(plan.Skipped))
+		for _, e := range plan.Skipped {
+			names = append(names, e.Name)
+		}
+		receipt += fmt.Sprintf("\nSkipped %d untracked name(s): %s\nTrack them with: `/track-characters names:%s`",
+			len(names), "`"+strings.Join(capList(names, 20), "`, `")+"`", strings.Join(names, ","))
 	}
 
 	if len(plan.Changes) > 0 {
@@ -218,23 +248,21 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]i
 		for _, c := range plan.Changes {
 			changedIDs = append(changedIDs, c.CharacterID)
 		}
-		go apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, culvertDate, changedIDs)
+		receipt += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, culvertDate, changedIDs))
 	}
+	receipt += rosterMeta.StalenessWarning()
 
-	r.Edit(fmt.Sprintf("Submitted %d scores (%d new, %d overwritten, %d zero-filled) for week %s.",
-		len(plan.Changes), plan.New, plan.Overwritten, plan.ZeroFilled, culvertDateStr))
+	r.Edit(receipt)
 }
 
-func sortedScoreEntries(scores map[string]int) []helpers.ScoreEntry {
-	names := make([]string, 0, len(scores))
-	for name := range scores {
-		names = append(names, name)
+// announcementStatusLine renders the weekly-announcement outcome for a receipt.
+func announcementStatusLine(err error) string {
+	switch {
+	case err == nil:
+		return "\nWeekly announcement updated."
+	case errors.Is(err, apihelpers.ErrNoWeeklyChannel):
+		return "\n:warning: Weekly announcement skipped - no weekly channel configured (`/config`)."
+	default:
+		return "\n:warning: Weekly announcement failed: " + err.Error()
 	}
-	sort.Strings(names)
-
-	entries := make([]helpers.ScoreEntry, 0, len(names))
-	for _, name := range names {
-		entries = append(entries, helpers.ScoreEntry{Name: name, Score: scores[name]})
-	}
-	return entries
 }

@@ -11,33 +11,19 @@ import (
 )
 
 func personalBests(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r := deferReply(s, i, false)
+
 	dest, err := helpers.LoadPersonalBestRankMetrics(db.DB, apiredis.RedisDB)
 	if err != nil {
 		log.Println("personalBests: load metrics failed", err)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "personal-bests command failed getting data from db. See server logs.",
-			},
-		})
+		r.Edit("personal-bests command failed getting data from db. See server logs.")
 		return
 	}
 
 	if len(dest) == 0 {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: "No personal best scores found.",
-			},
-		})
+		r.Edit("No personal best scores found yet.\nSubmitters: post a screenshot and right click it -> Apps -> **Submit Scores**.")
 		return
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "Here are the up-to-date rankings!",
-			Files:   []*discordgo.File{{Name: "message.txt", Reader: strings.NewReader(helpers.FormatPersonalBestsTable(dest))}},
-		},
-	})
+	r.Edit("Here are the up-to-date rankings!", &discordgo.File{Name: "message.txt", Reader: strings.NewReader(helpers.FormatPersonalBestsTable(dest))})
 }

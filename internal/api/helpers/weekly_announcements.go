@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -15,6 +16,11 @@ import (
 	redis "github.com/valkey-io/valkey-go"
 )
 
+// ErrNoWeeklyChannel reports that no weekly announcement channel is
+// configured: announcing is skipped, which callers may surface as a
+// non-failure.
+var ErrNoWeeklyChannel = errors.New("no weekly channel configured")
+
 // AnnounceSubmission is the only place the bot posts without being asked, and
 // it only posts to the configured weekly channel (CONF_DISCORD_WEEKLY_CHANNEL_ID):
 //   - one message per culvert week holding the FULL score table, created on the
@@ -25,18 +31,23 @@ import (
 // Submissions for historical weeks update that week's message/thread.
 // changedIDs are the character ids touched by this submission; only their new
 // personal bests are congratulated.
-func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, week time.Time, changedIDs []int64) {
+//
+// The returned error tells the caller whether the announcement went out:
+// nil = message (and thread note) updated, ErrNoWeeklyChannel = skipped by
+// configuration, anything else = failed (details logged).
+func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, week time.Time, changedIDs []int64) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Println("AnnounceSubmission: recovered from panic:", r)
+			err = fmt.Errorf("internal error (see server logs)")
 		}
 	}()
 	if s == nil {
-		return
+		return errors.New("no discord session")
 	}
 	channelID := apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.GetWithDefault(rdb, "")
 	if channelID == "" {
-		return
+		return ErrNoWeeklyChannel
 	}
 
 	week = cmdhelpers.GetCulvertResetDate(week)
@@ -46,34 +57,46 @@ func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, we
 	rows, err := weekScores(dbc, week)
 	if err != nil {
 		log.Println("AnnounceSubmission: query week scores:", err)
-		return
+		return errors.New("querying the week's scores failed (see server logs)")
 	}
 	if len(rows) == 0 {
-		return
+		return errors.New("no scores recorded for that week")
 	}
 	prevRows, err := weekScores(dbc, prevWeek)
 	if err != nil {
+		// The previous-week comparison is decorative: log and degrade.
 		log.Println("AnnounceSubmission: query prev week scores:", err)
-		return
+		prevRows = nil
 	}
 	prevByID := map[int64]weekScore{}
 	for _, p := range prevRows {
 		prevByID[p.CharacterID] = p
 	}
 
-	content, file := buildWeeklyMessage(weekStr, rows, prevByID)
-	threadID := upsertWeeklyMessage(s, dbc, channelID, weekStr, content, file)
+	// Roster size for the "N of M members submitted" header; degrade to the
+	// submitted count when the roster is unavailable.
+	rosterCount := len(rows)
+	if chars, cerr := cmdhelpers.GetActiveCharacters(rdb, dbc); cerr == nil && len(*chars) >= len(rows) {
+		rosterCount = len(*chars)
+	}
+
+	content, file := buildWeeklyMessage(weekStr, rosterCount, rows, prevByID)
+	threadID, err := upsertWeeklyMessage(s, dbc, channelID, weekStr, content, file)
+	if err != nil {
+		return err
+	}
 	if threadID == "" {
-		return
+		return errors.New("the weekly table was updated but its notes thread is unavailable")
 	}
 
 	note := buildSubmissionNote(dbc, week, weekStr, rows, changedIDs)
 	for _, chunk := range chunkMessage(note, 1900) {
 		if _, err := s.ChannelMessageSend(threadID, chunk); err != nil {
 			log.Println("AnnounceSubmission: thread note failed:", err)
-			return
+			return errors.New("the weekly table was updated but posting the thread note failed")
 		}
 	}
+	return nil
 }
 
 type weekScore struct {
@@ -129,8 +152,9 @@ func FormatThousands(n int) string {
 }
 
 // buildWeeklyMessage renders the full week table. When it fits, the table is
-// inline in a code block; otherwise it is attached as a file.
-func buildWeeklyMessage(weekStr string, rows []weekScore, prevByID map[int64]weekScore) (string, *discordgo.File) {
+// inline in a code block; otherwise it is attached as a file. rosterCount is
+// the tracked roster size for the "N of M members submitted" header.
+func buildWeeklyMessage(weekStr string, rosterCount int, rows []weekScore, prevByID map[int64]weekScore) (string, *discordgo.File) {
 	t := table.NewWriter()
 	t.AppendHeader(table.Row{"Rank", "Character", "Score", "Last Week"})
 	for _, r := range rows {
@@ -143,7 +167,7 @@ func buildWeeklyMessage(weekStr string, rows []weekScore, prevByID map[int64]wee
 	rendered := t.Render()
 
 	header := "## Culvert week of " + weekStr + "\n" +
-		fmt.Sprintf("%d members - last updated <t:%d:R>", len(rows), time.Now().Unix())
+		fmt.Sprintf("%d of %d members submitted - last updated <t:%d:R>", len(rows), rosterCount, time.Now().Unix())
 	inline := header + "\n```\n" + rendered + "\n```"
 	if len(inline) <= 1900 {
 		return inline, nil
@@ -156,15 +180,17 @@ func buildWeeklyMessage(weekStr string, rows []weekScore, prevByID map[int64]wee
 }
 
 // upsertWeeklyMessage creates or edits the week's designated-channel message
-// and returns the id of its thread ("" when unavailable).
-func upsertWeeklyMessage(s *discordgo.Session, dbc *sql.DB, channelID, weekStr, content string, file *discordgo.File) string {
+// and returns the id of its thread ("" when the message went out but its
+// thread could not be created). A non-nil error means the message itself
+// could not be created or updated.
+func upsertWeeklyMessage(s *discordgo.Session, dbc *sql.DB, channelID, weekStr, content string, file *discordgo.File) (string, error) {
 	var storedChannel, storedMessage, storedThread string
 	err := dbc.QueryRow(
 		`SELECT channel_id, message_id, thread_id FROM weekly_announcements WHERE culvert_date = $1`,
 		weekStr).Scan(&storedChannel, &storedMessage, &storedThread)
 	if err != nil && err != sql.ErrNoRows {
 		log.Println("AnnounceSubmission: query weekly_announcements:", err)
-		return ""
+		return "", errors.New("querying the weekly announcement record failed (see server logs)")
 	}
 
 	if err == nil {
@@ -179,13 +205,30 @@ func upsertWeeklyMessage(s *discordgo.Session, dbc *sql.DB, channelID, weekStr, 
 			edit.Files = []*discordgo.File{file}
 		}
 		if _, err := s.ChannelMessageEditComplex(edit); err == nil {
-			return storedThread
+			if storedThread == "" {
+				// Self-heal: an earlier run posted the message but failed to
+				// start its thread. Retry now and remember the result.
+				if thread, terr := s.MessageThreadStartComplex(storedChannel, storedMessage, &discordgo.ThreadStart{
+					Name:                "Culvert " + weekStr,
+					AutoArchiveDuration: 10080,
+				}); terr != nil {
+					log.Println("AnnounceSubmission: thread self-heal failed:", terr)
+				} else {
+					storedThread = thread.ID
+					if _, uerr := dbc.Exec(
+						`UPDATE weekly_announcements SET thread_id = $1 WHERE culvert_date = $2`,
+						storedThread, weekStr); uerr != nil {
+						log.Println("AnnounceSubmission: store healed thread id:", uerr)
+					}
+				}
+			}
+			return storedThread, nil
 		}
 		// The stored message is gone (deleted channel/message); recreate it.
 		log.Println("AnnounceSubmission: stored weekly message unreachable, recreating")
 		if _, err := dbc.Exec(`DELETE FROM weekly_announcements WHERE culvert_date = $1`, weekStr); err != nil {
 			log.Println("AnnounceSubmission: delete stale weekly_announcements:", err)
-			return ""
+			return "", errors.New("the stored weekly message is unreachable and its record could not be reset (see server logs)")
 		}
 	}
 
@@ -196,7 +239,7 @@ func upsertWeeklyMessage(s *discordgo.Session, dbc *sql.DB, channelID, weekStr, 
 	msg, err := s.ChannelMessageSendComplex(channelID, send)
 	if err != nil {
 		log.Println("AnnounceSubmission: send weekly message:", err)
-		return ""
+		return "", errors.New("posting the weekly message failed - check the bot's permissions in the weekly channel")
 	}
 	threadID := ""
 	thread, err := s.MessageThreadStartComplex(channelID, msg.ID, &discordgo.ThreadStart{
@@ -213,13 +256,33 @@ func upsertWeeklyMessage(s *discordgo.Session, dbc *sql.DB, channelID, weekStr, 
 		weekStr, channelID, msg.ID, threadID); err != nil {
 		log.Println("AnnounceSubmission: insert weekly_announcements:", err)
 	}
-	return threadID
+	return threadID, nil
 }
 
 // buildSubmissionNote renders the thread note for one submission: timestamp,
-// scope, and personal-best congratulations for the characters that changed.
+// scope (counting real scores separately from zero-fills), and personal-best
+// congratulations for the characters that changed.
 func buildSubmissionNote(dbc *sql.DB, week time.Time, weekStr string, rows []weekScore, changedIDs []int64) string {
-	note := fmt.Sprintf("Scores submitted <t:%d:f> for week **%s** (%d characters).", time.Now().Unix(), weekStr, len(changedIDs))
+	changedSet := map[int64]bool{}
+	for _, id := range changedIDs {
+		changedSet[id] = true
+	}
+	nonZero, zeroFilled := 0, 0
+	for _, row := range rows {
+		if !changedSet[row.CharacterID] {
+			continue
+		}
+		if row.Score > 0 {
+			nonZero++
+		} else {
+			zeroFilled++
+		}
+	}
+	scope := fmt.Sprintf("%d characters", len(changedIDs))
+	if zeroFilled > 0 {
+		scope = fmt.Sprintf("%d characters: %d with scores, %d zero-filled", len(changedIDs), nonZero, zeroFilled)
+	}
+	note := fmt.Sprintf("Scores submitted <t:%d:f> for week **%s** (%s).", time.Now().Unix(), weekStr, scope)
 
 	pbs := newPersonalBests(dbc, week, rows, changedIDs)
 	if len(pbs) > 0 {

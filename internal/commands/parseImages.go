@@ -21,6 +21,9 @@ import (
 )
 
 func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !requireSubmitPermission(s, i) {
+		return
+	}
 	r := deferReply(s, i, false)
 
 	messageLink := ""
@@ -179,6 +182,13 @@ func runParseImages(r *reply, imageURLs []string) {
 
 	msg := fmt.Sprintf("Parsed %d row(s) from %d image(s): %d tracked, %d NEW.",
 		len(oc.merged), len(imageURLs), len(oc.merged)-len(oc.unmatched), len(oc.unmatched))
+	if len(oc.unmatched) > 0 {
+		names := make([]string, 0, len(oc.unmatched))
+		for _, e := range oc.unmatched {
+			names = append(names, e.Name)
+		}
+		msg += "\nTrack the NEW ones with: `/track-characters names:" + strings.Join(names, ",") + "` (submitting auto-tracks them by default)"
+	}
 	msg += ocrWarnings(oc)
 	// Non-fatal validation: scores should be in descending order. If not, warn
 	// but still attach the output so the user can inspect/correct it.

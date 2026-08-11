@@ -25,13 +25,15 @@ func TestPlanSubmission(t *testing.T) {
 		overwritten int
 		zeroFilled  int
 		conflicts   []scoreConflict
-		unmatched   []string
+		autoTrack   []string
+		skipped     []string
 	}
 	cases := []struct {
 		name        string
 		submitted   map[string]int
 		overwrite   bool
 		zeroMissing bool
+		autoTrack   bool
 		want        want
 	}{
 		{
@@ -104,16 +106,39 @@ func TestPlanSubmission(t *testing.T) {
 			want:        want{changes: map[int64]int{1: 0, 4: 0}, zeroFilled: 2},
 		},
 		{
-			name:      "unmatched names are collected sorted",
+			name:      "unmatched names land in Skipped (sorted) when auto-track is off",
 			submitted: map[string]int{"Zed": 10, "Alice": 100, "Mallory": 20},
 			want: want{changes: map[int64]int{1: 100}, newCount: 1,
-				unmatched: []string{"Mallory", "Zed"}},
+				skipped: []string{"Mallory", "Zed"}},
+		},
+		{
+			name:      "unmatched names land in AutoTrack (sorted) when auto-track is on",
+			submitted: map[string]int{"Zed": 10, "Alice": 100, "Mallory": 20},
+			autoTrack: true,
+			// Matched rows are still planned; the caller creates the AutoTrack
+			// characters and appends their score changes itself.
+			want: want{changes: map[int64]int{1: 100}, newCount: 1,
+				autoTrack: []string{"Mallory", "Zed"}},
+		},
+		{
+			name:      "auto-track with an all-unmatched submission plans no direct changes",
+			submitted: map[string]int{"Zed": 10, "Mallory": 20},
+			autoTrack: true,
+			want:      want{changes: map[int64]int{}, autoTrack: []string{"Mallory", "Zed"}},
+		},
+		{
+			name:      "auto-track never hides conflicts on matched rows",
+			submitted: map[string]int{"Bob": 600, "Zed": 10},
+			autoTrack: true,
+			want: want{changes: map[int64]int{},
+				conflicts: []scoreConflict{{Name: "Bob", Existing: 500, Incoming: 600}},
+				autoTrack: []string{"Zed"}},
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := planSubmission(tracked, c.submitted, c.overwrite, c.zeroMissing)
+			p := planSubmission(tracked, c.submitted, c.overwrite, c.zeroMissing, c.autoTrack)
 
 			gotChanges := map[int64]int{}
 			for _, ch := range p.Changes {
@@ -148,12 +173,18 @@ func TestPlanSubmission(t *testing.T) {
 					}
 				}
 			}
-			gotUnmatched := make([]string, 0, len(p.Unmatched))
-			for _, u := range p.Unmatched {
-				gotUnmatched = append(gotUnmatched, u.Name)
+			names := func(entries []helpers.ScoreEntry) []string {
+				out := make([]string, 0, len(entries))
+				for _, e := range entries {
+					out = append(out, e.Name)
+				}
+				return out
 			}
-			if strings.Join(gotUnmatched, ",") != strings.Join(c.want.unmatched, ",") {
-				t.Errorf("unmatched = %v, want %v", gotUnmatched, c.want.unmatched)
+			if got := names(p.AutoTrack); strings.Join(got, ",") != strings.Join(c.want.autoTrack, ",") {
+				t.Errorf("autoTrack = %v, want %v", got, c.want.autoTrack)
+			}
+			if got := names(p.Skipped); strings.Join(got, ",") != strings.Join(c.want.skipped, ",") {
+				t.Errorf("skipped = %v, want %v", got, c.want.skipped)
 			}
 		})
 	}

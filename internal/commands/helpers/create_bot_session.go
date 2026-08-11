@@ -78,6 +78,16 @@ func CreateBotSessionWithCommands(commands []*discordgo.ApplicationCommand, comm
 	s.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		log.Printf("Logged in as: %v#%v", s.State.User.Username, s.State.User.Discriminator)
 
+		// Refresh the Discord member cache (used for optional roster
+		// narrowing) in the background, and remember the session so
+		// roster-dependent flows can refresh lazily when it goes stale.
+		SetRosterSession(s)
+		go func() {
+			if err := RefreshMemberCache(s); err != nil {
+				log.Println("Ready: member cache refresh failed:", err)
+			}
+		}()
+
 		err := UpdateCommands(s, commands)
 		if err != nil {
 			log.Println("Failed UpdateCommands")

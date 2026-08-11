@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"sort"
@@ -47,6 +48,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		registerReply(s, i, "Only server admins can use `/config`.")
 		return
 	}
+	r := deferReply(s, i, true)
 
 	settingName := ""
 	value := ""
@@ -101,7 +103,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		for idx, chunk := range chunkText(out, 1900) {
 			if idx == 0 {
-				registerReply(s, i, chunk)
+				r.Edit(chunk)
 				continue
 			}
 			s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
@@ -114,7 +116,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	k, ok := apiredis.KeysMap[settingName]
 	if !ok || k.EditableType == apiredis.EditableTypeNone {
-		registerReply(s, i, "Unknown setting.")
+		r.Edit("Unknown setting.")
 		return
 	}
 	desc := apiredis.GetHumanReadableDescriptions(k)
@@ -147,7 +149,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if desc != nil {
 			hint = "\n" + desc.Description
 		}
-		registerReply(s, i, "**"+label+"** is currently: `"+cur+"`"+hint)
+		r.Edit("**" + label + "** is currently: `" + cur + "`" + hint)
 		return
 	}
 
@@ -155,13 +157,13 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch k.EditableType {
 	case apiredis.EditableTypeBool:
 		if value != "true" && value != "false" && value != "" {
-			registerReply(s, i, "Value must be `true` or `false`.")
+			r.Edit("Value must be `true` or `false`.")
 			return
 		}
 	case apiredis.EditableTypeFloat64:
 		if value != "" {
 			if _, err := strconv.ParseFloat(value, 64); err != nil {
-				registerReply(s, i, "Value must be a number.")
+				r.Edit("Value must be a number.")
 				return
 			}
 		}
@@ -174,7 +176,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 		}
 		if !valid {
-			registerReply(s, i, "Value must be one of: `"+strings.Join(apiredis.EditableSelectionsMap[k], "`, `")+"`")
+			r.Edit("Value must be one of: `" + strings.Join(apiredis.EditableSelectionsMap[k], "`, `") + "`")
 			return
 		}
 	case apiredis.EditableTypeDiscordChannel, apiredis.EditableTypeDiscordRole:
@@ -185,16 +187,16 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if id == "" {
 				continue
 			}
-			for _, r := range id {
-				if r < '0' || r > '9' {
-					registerReply(s, i, "Value must be a channel/role id (or mention), comma separated when multiple.")
+			for _, ch := range id {
+				if ch < '0' || ch > '9' {
+					r.Edit("Value must be a channel/role id (or mention), comma separated when multiple.")
 					return
 				}
 			}
 			cleaned = append(cleaned, id)
 		}
 		if len(cleaned) > 1 && !k.Multiple {
-			registerReply(s, i, "This setting takes a single id.")
+			r.Edit("This setting takes a single id.")
 			return
 		}
 		value = strings.Join(cleaned, ",")
@@ -202,14 +204,14 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	if err := k.Set(apiredis.RedisDB, value); err != nil {
 		log.Println("config: set failed:", err)
-		registerReply(s, i, "Failed to save the setting. Please try again later.")
+		r.Edit("Failed to save the setting. Please try again later.")
 		return
 	}
 	if value == "" {
-		registerReply(s, i, "**"+label+"** cleared.")
+		r.Edit("**" + label + "** cleared.")
 		return
 	}
-	registerReply(s, i, "**"+label+"** set to `"+value+"`. :white_check_mark:")
+	r.Edit("**" + label + "** set to `" + value + "`. :white_check_mark:")
 }
 
 func chunkText(content string, limit int) []string {
@@ -239,6 +241,7 @@ func untrackCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !requireSubmitPermission(s, i) {
 		return
 	}
+	r := deferReply(s, i, true)
 	name := ""
 	for _, v := range i.ApplicationCommandData().Options {
 		if v.Name == "character-name" {
@@ -248,14 +251,14 @@ func untrackCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	res, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '1' WHERE LOWER(maple_character_name) = LOWER($1)`, name)
 	if err != nil {
 		log.Println("untrack-character:", err)
-		registerReply(s, i, "Something went wrong. Please try again later.")
+		r.Edit("Something went wrong. Please try again later.")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		registerReply(s, i, "No tracked character named `"+name+"` found.")
+		r.Edit("No tracked character named `" + name + "` found.")
 		return
 	}
-	registerReply(s, i, "`"+name+"` is no longer tracked. Its historical scores are kept and it can be re-tracked anytime.")
+	r.Edit("`" + name + "` is no longer tracked. Its historical scores are kept and it can be re-tracked anytime.")
 }
 
 // renameCharacter renames a tracked character (post name-change).
@@ -263,6 +266,7 @@ func renameCharacterCmd(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !requireSubmitPermission(s, i) {
 		return
 	}
+	r := deferReply(s, i, true)
 	oldName := ""
 	newName := ""
 	skipNameCheck := false
@@ -280,7 +284,7 @@ func renameCharacterCmd(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !skipNameCheck {
 		charData, err := apihelpers.FetchCharacterData(newName, apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, "na"))
 		if err != nil || charData == nil {
-			registerReply(s, i, "I couldn't find `"+newName+"` on the official MapleStory rankings. Double-check the spelling, or add `skip-name-check:True`.")
+			r.Edit("I couldn't find `" + newName + "` on the official MapleStory rankings. Double-check the spelling, or add `skip-name-check:True`.")
 			return
 		}
 		newName = charData.CharacterName
@@ -288,20 +292,20 @@ func renameCharacterCmd(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	var clash int64
 	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM characters WHERE LOWER(maple_character_name) = LOWER($1)`, newName).Scan(&clash); err == nil && clash > 0 {
-		registerReply(s, i, "A character named `"+newName+"` already exists.")
+		r.Edit("A character named `" + newName + "` already exists.")
 		return
 	}
 	res, err := db.DB.Exec(`UPDATE characters SET maple_character_name = $1 WHERE LOWER(maple_character_name) = LOWER($2)`, newName, oldName)
 	if err != nil {
 		log.Println("rename-character:", err)
-		registerReply(s, i, "Something went wrong. Please try again later.")
+		r.Edit("Something went wrong. Please try again later.")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		registerReply(s, i, "No tracked character named `"+oldName+"` found.")
+		r.Edit("No tracked character named `" + oldName + "` found.")
 		return
 	}
-	registerReply(s, i, "Renamed `"+oldName+"` to `"+newName+"`. All history moved with it. :white_check_mark:")
+	r.Edit("Renamed `" + oldName + "` to `" + newName + "`. All history moved with it. :white_check_mark:")
 }
 
 // setScore manually sets one character's score for a week (admin correction).
@@ -309,9 +313,11 @@ func setScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !requireSubmitPermission(s, i) {
 		return
 	}
+	r := deferReply(s, i, true)
 	name := ""
 	score := -1
 	dateStr := ""
+	createIfMissing := false
 	for _, v := range i.ApplicationCommandData().Options {
 		switch v.Name {
 		case "character-name":
@@ -320,6 +326,8 @@ func setScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			score = int(v.IntValue())
 		case "date":
 			dateStr = strings.TrimSpace(v.StringValue())
+		case "create-if-missing":
+			createIfMissing = v.BoolValue()
 		}
 	}
 
@@ -327,22 +335,32 @@ func setScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if dateStr != "" {
 		d, err := time.Parse(time.DateOnly, dateStr)
 		if err != nil {
-			registerReply(s, i, "Invalid date format, should be YYYY-MM-DD")
+			r.Edit("Invalid date format, should be YYYY-MM-DD")
 			return
 		}
 		if d.Weekday() != helpers.GetCulvertResetDay(d) {
-			registerReply(s, i, "The provided date is not a culvert reset day (Wednesday).")
+			r.Edit("The provided date is not a culvert reset day (Wednesday).")
 			return
 		}
 		week = d
 	}
 	weekStr := week.Format(time.DateOnly)
 
+	created := false
 	var charID int64
 	var realName string
 	err := db.DB.QueryRow(`SELECT id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1)`, name).Scan(&charID, &realName)
-	if err != nil {
-		registerReply(s, i, "No tracked character named `"+name+"` found.")
+	if err == sql.ErrNoRows && createIfMissing {
+		createdNames, ids, terr := helpers.TrackCharacters(db.DB, []string{name})
+		if terr != nil {
+			log.Println("set-score: create-if-missing failed:", terr)
+			r.Edit("Something went wrong tracking the character. Please try again later.")
+			return
+		}
+		charID, realName = ids[name], name
+		created = len(createdNames) > 0
+	} else if err != nil {
+		r.Edit("No tracked character named `" + name + "` found. Add `create-if-missing:True` to track it now, or bulk-track with `/track-characters names:" + name + "`.")
 		return
 	}
 	if _, err := db.DB.Exec(
@@ -350,11 +368,15 @@ func setScore(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		 ON CONFLICT (culvert_date, character_id) DO UPDATE SET score = $3`,
 		charID, weekStr, score); err != nil {
 		log.Println("set-score:", err)
-		registerReply(s, i, "Something went wrong saving the score. Please try again later.")
+		r.Edit("Something went wrong saving the score. Please try again later.")
 		return
 	}
-	go apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, []int64{charID})
-	registerReply(s, i, "Set `"+realName+"` to **"+apihelpers.FormatThousands(score)+"** for week "+weekStr+". :white_check_mark:")
+	msg := "Set `" + realName + "` to **" + apihelpers.FormatThousands(score) + "** for week " + weekStr + ". :white_check_mark:"
+	if created {
+		msg += "\nTracked `" + realName + "` as a new character (members can `/register` to claim it)."
+	}
+	msg += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, []int64{charID}))
+	r.Edit(msg)
 }
 
 // resetData wipes all tracked characters, scores and weekly announcement
@@ -365,6 +387,7 @@ func resetData(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		registerReply(s, i, "Only server admins can use `/reset`.")
 		return
 	}
+	r := deferReply(s, i, true)
 	confirm := ""
 	for _, v := range i.ApplicationCommandData().Options {
 		if v.Name == "confirm" {
@@ -372,7 +395,7 @@ func resetData(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 	if confirm != "DELETE EVERYTHING" {
-		registerReply(s, i, "This permanently deletes **all** tracked characters, **all** culvert scores, and the bot's weekly announcement records. Settings are kept.\nTo proceed, run `/reset confirm:DELETE EVERYTHING` (typed exactly).")
+		r.Edit("This permanently deletes **all** tracked characters, **all** culvert scores, and the bot's weekly announcement records. Settings are kept.\nTo proceed, run `/reset confirm:DELETE EVERYTHING` (typed exactly).")
 		return
 	}
 
@@ -382,9 +405,9 @@ func resetData(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	if _, err := db.DB.Exec(`TRUNCATE character_culvert_scores, weekly_announcements, characters RESTART IDENTITY CASCADE`); err != nil {
 		log.Println("reset:", err)
-		registerReply(s, i, "Something went wrong wiping the data. Nothing may have been deleted; check the server logs.")
+		r.Edit("Something went wrong wiping the data. Nothing may have been deleted; check the server logs.")
 		return
 	}
 
-	registerReply(s, i, fmt.Sprintf("Wiped **%d characters** and **%d scores**. The tracker is now a blank slate. :broom:\nOld weekly announcement messages in Discord are not deleted automatically - remove them manually if you want.\nStart fresh with `/register` and your next screenshot submission.", chars, scores))
+	r.Edit(fmt.Sprintf("Wiped **%d characters** and **%d scores**. The tracker is now a blank slate. :broom:\nOld weekly announcement messages in Discord are not deleted automatically - remove them manually if you want.\nStart fresh with `/register` and your next screenshot submission.", chars, scores))
 }

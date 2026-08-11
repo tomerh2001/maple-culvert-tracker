@@ -40,7 +40,7 @@ const setupText = `## Culvert Tracker - admin setup guide
 The bot then keeps ONE message per week there with the full score table (edited in place), plus a thread with submission notes and personal-best shoutouts. Leave unset for no announcements at all.
 
 **3. Track the roster**
-Members self-serve with ` + "`/register`" + `; submitters can also link anyone with ` + "`/register character-name:X user:@member`" + `.
+Members self-serve with ` + "`/register`" + `; submitters can also link anyone with ` + "`/register character-name:X user:@member`" + ` or bulk-track names with ` + "`/track-characters`" + `. Submitting scores auto-tracks unknown names by default.
 
 **4. Submit scores weekly**
 Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine), post it in Discord, then right click the message -> Apps -> **Submit Scores**. Done.
@@ -54,11 +54,11 @@ Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status*
 *Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
 func helpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	registerReply(s, i, helpText)
+	deferReply(s, i, true).Edit(helpText)
 }
 
 func setupCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	registerReply(s, i, setupText)
+	deferReply(s, i, true).Edit(setupText)
 }
 
 // leaderboard consolidates the old culvert-summary (table) and

@@ -40,6 +40,24 @@ func (r *reply) Edit(msg string, files ...*discordgo.File) {
 	}
 }
 
+// EditData edits the deferred response from an InteractionResponseData
+// (embeds + files + content), for handlers whose output is built elsewhere.
+func (r *reply) EditData(d *discordgo.InteractionResponseData) {
+	edit := &discordgo.WebhookEdit{}
+	if d.Content != "" {
+		edit.Content = &d.Content
+	}
+	if len(d.Embeds) > 0 {
+		edit.Embeds = &d.Embeds
+	}
+	if len(d.Files) > 0 {
+		edit.Files = d.Files
+	}
+	if _, err := r.s.InteractionResponseEdit(r.i.Interaction, edit); err != nil {
+		log.Println("reply.EditData: InteractionResponseEdit:", err)
+	}
+}
+
 // EditWithTable edits the deferred response with msg plus a rendered text
 // table: inline as a code block when it fits Discord's content limit,
 // otherwise attached as filename. extraFiles are attached either way.
