@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
@@ -584,7 +585,7 @@ func locateOn(grids *tableGrids) (loose, tight [][]bool) {
 // resolution, searching a small grid of scales around the pitch estimate and
 // both scaling modes. The table is located once (its position in image pixels
 // does not depend on the candidate template scale).
-func parseScaledAround(img image.Image, est float64, firstRowY int, strict [][]bool, font *GPQFont, memberNames []string) ([]ScoreEntry, bool) {
+func parseScaledAround(img image.Image, est float64, firstRowY int, strict [][]bool, font *GPQFont, memberNames []string, deadline time.Time) ([]ScoreEntry, bool) {
 	grids := scaledModeGrids(img, strict)
 
 	// Locate the header: greedy decoding first (fast), the smooth DP decoder
@@ -609,6 +610,9 @@ func parseScaledAround(img image.Image, est float64, firstRowY int, strict [][]b
 			continue
 		}
 		for _, mode := range gpqScaleModes {
+			if time.Now().After(deadline) {
+				return best, region.found
+			}
 			sf := font.scaledFont(f, mode, scaledTol(mode))
 			e := parseTableRows(grids[mode], region, sf, memberNames)
 			if len(e) > len(best) {
@@ -628,12 +632,15 @@ func parseScaledAround(img image.Image, est float64, firstRowY int, strict [][]b
 // parseScaledLadder is the fallback when the strict parse found nothing and
 // the image has too few rows to estimate a pitch: sweep a coarse scale
 // ladder with both scaling modes.
-func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, memberNames []string) ([]ScoreEntry, bool) {
+func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, memberNames []string, deadline time.Time) ([]ScoreEntry, bool) {
 	grids := scaledModeGrids(img, strict)
 	best := []ScoreEntry{}
 	bestHeader := false
 	for _, f := range []float64{1.25, 1.5, 1.75, 2.0, 2.5, 3.0} {
 		for _, mode := range gpqScaleModes {
+			if time.Now().After(deadline) {
+				return best, bestHeader
+			}
 			sf := font.scaledFont(f, mode, scaledTol(mode))
 			loose, tight := locateOn(grids[mode])
 			region := locateTable(loose, tight, sf, -1)
@@ -655,27 +662,47 @@ func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, memberNa
 // reconciled against memberNames. Native 1x is matched strictly; scaled
 // screenshots (integer or fractional UI scales) are matched with glyph
 // templates upscaled to the detected scale.
+// gpqParseBudget caps the wall-clock spent on one image: when exceeded, the
+// best result found so far is returned instead of searching further scales.
+const gpqParseBudget = 15 * time.Second
+
+// gpqMaxPixels rejects absurdly large images before any work happens.
+const gpqMaxPixels = 24_000_000
+
 func ParseParticipationImage(imgData []byte, memberNames []string, font *GPQFont) ([]ScoreEntry, error) {
 	img, _, err := image.Decode(strings.NewReader(string(imgData)))
 	if err != nil {
 		return nil, err
 	}
+	if b := img.Bounds(); b.Dx()*b.Dy() > gpqMaxPixels {
+		return nil, errImageTooLarge
+	}
 
 	grid := binarizeFull(img)
 	best, bestHeader := parseParticipationGrid(grid, font, memberNames)
 
+	deadline := time.Now().Add(gpqParseBudget)
 	est, firstRowY := estimateScaleAndFirstRow(grid)
 	if est < gpqMinScaledEst {
 		if est == 0 && len(best) == 0 {
-			if e, h := parseScaledLadder(img, grid, font, memberNames); betterParse(e, h, best, bestHeader) {
+			if e, h := parseScaledLadder(img, grid, font, memberNames, deadline); betterParse(e, h, best, bestHeader) {
 				best = e
 			}
 		}
 		return best, nil
 	}
 
-	if e, h := parseScaledAround(img, est, firstRowY, grid, font, memberNames); betterParse(e, h, best, bestHeader) {
+	if e, h := parseScaledAround(img, est, firstRowY, grid, font, memberNames, deadline); betterParse(e, h, best, bestHeader) {
 		best = e
 	}
 	return best, nil
+}
+
+// errImageTooLarge is returned for absurdly large screenshots.
+var errImageTooLarge = errTooLarge{}
+
+type errTooLarge struct{}
+
+func (errTooLarge) Error() string {
+	return "image is too large to parse - please post the screenshot at its original size"
 }
