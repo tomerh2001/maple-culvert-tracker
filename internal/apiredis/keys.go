@@ -31,6 +31,10 @@ var (
 	DATA_DISCORD_MEMBERS_LAST_ERROR = redisInternalKey{"DATA_DISCORD_MEMBERS_LAST_ERROR", EditableTypeNone, false}
 
 	DATA_DISCORD_NEW_FEATURES_ANNOUNCEMENT_VERSION = redisInternalKey{"DATA_DISCORD_NEW_FEATURES_ANNOUNCEMENT_VERSION", EditableTypeNone, false}
+
+	// DATA_COMMAND_REGISTRATION_STATUS holds the outcome of the last slash
+	// command registration pass: "ok" on success, otherwise the error string.
+	DATA_COMMAND_REGISTRATION_STATUS = redisInternalKey{"DATA_COMMAND_REGISTRATION_STATUS", EditableTypeNone, false}
 )
 
 var KeysMap = map[string]redisInternalKey{}
@@ -60,4 +64,5 @@ func init() {
 	KeysMap[DATA_DISCORD_MEMBERS.Name] = DATA_DISCORD_MEMBERS
 	KeysMap[DATA_DISCORD_MEMBERS_UPDATED_AT.Name] = DATA_DISCORD_MEMBERS_UPDATED_AT
 	KeysMap[DATA_DISCORD_MEMBERS_LAST_ERROR.Name] = DATA_DISCORD_MEMBERS_LAST_ERROR
+	KeysMap[DATA_COMMAND_REGISTRATION_STATUS.Name] = DATA_COMMAND_REGISTRATION_STATUS
 }

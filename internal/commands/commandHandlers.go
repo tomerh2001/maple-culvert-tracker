@@ -18,6 +18,7 @@ var CommandHandlers = map[string]func(s *discordgo.Session, i *discordgo.Interac
 	},
 	"help":              helpCommand,
 	"setup":             setupCommand,
+	"health":            healthCommand,
 	"culvert":           culvertBase,
 	"leaderboard":       leaderboard,
 	"register":          registerCharacter,

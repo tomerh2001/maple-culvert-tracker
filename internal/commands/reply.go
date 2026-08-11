@@ -58,6 +58,23 @@ func (r *reply) EditData(d *discordgo.InteractionResponseData) {
 	}
 }
 
+// EditChunked splits msg on line boundaries under Discord's content limit and
+// delivers the first chunk via Edit and the rest as ephemeral followups.
+func (r *reply) EditChunked(msg string) {
+	for idx, chunk := range chunkText(msg, 1900) {
+		if idx == 0 {
+			r.Edit(chunk)
+			continue
+		}
+		if _, err := r.s.FollowupMessageCreate(r.i.Interaction, true, &discordgo.WebhookParams{
+			Content: chunk,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		}); err != nil {
+			log.Println("reply.EditChunked: FollowupMessageCreate:", err)
+		}
+	}
+}
+
 // EditWithTable edits the deferred response with msg plus a rendered text
 // table: inline as a code block when it fits Discord's content limit,
 // otherwise attached as filename. extraFiles are attached either way.

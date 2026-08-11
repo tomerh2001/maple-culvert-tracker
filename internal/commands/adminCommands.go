@@ -101,16 +101,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 			out += "\n**" + label + "** (`" + name + "`): " + display
 		}
-		for idx, chunk := range chunkText(out, 1900) {
-			if idx == 0 {
-				r.Edit(chunk)
-				continue
-			}
-			s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-				Content: chunk,
-				Flags:   discordgo.MessageFlagsEphemeral,
-			})
-		}
+		r.EditChunked(out)
 		return
 	}
 

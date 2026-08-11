@@ -218,11 +218,18 @@ func ocrWarnings(oc *ocrOutcome) string {
 		msg += "\n:warning: Conflicting scores for the same character across images (kept the first, please verify):"
 		msg += "\n- " + strings.Join(capList(oc.conflicts, 5), "\n- ")
 	}
-	if len(oc.defects) > 0 {
-		msg += "\n:warning: Parse anomalies:"
-		msg += "\n- " + strings.Join(capList(oc.defects, 5), "\n- ")
-	}
+	msg += defectsWarning(oc.defects)
 	return msg
+}
+
+// defectsWarning renders the non-fatal parse-defect list of an OCR outcome
+// ("" when clean). Defects never block a parse or submission, but they are
+// never dropped silently either.
+func defectsWarning(defects []string) string {
+	if len(defects) == 0 {
+		return ""
+	}
+	return "\n:warning: Parse anomalies:\n- " + strings.Join(capList(defects, 5), "\n- ")
 }
 
 // capList truncates a list to n items, appending a "... and X more" marker.

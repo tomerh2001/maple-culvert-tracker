@@ -1,7 +1,12 @@
 package commands
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/bwmarrin/discordgo"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
 const helpText = `## Culvert Tracker - how to use it
@@ -58,7 +63,46 @@ func helpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func setupCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	deferReply(s, i, true).Edit(setupText)
+	deferReply(s, i, true).EditChunked(setupText + "\n" + setupStatusBlock(s))
+}
+
+// setupStatusMaxProblems caps the health issues shown in /setup's status block
+// (fails first); /health has the full list.
+const setupStatusMaxProblems = 8
+
+// setupStatusBlock renders the live tail of /setup: every /config setting's
+// set/unset state plus the current health warns/fails.
+func setupStatusBlock(s *discordgo.Session) string {
+	var b strings.Builder
+	b.WriteString("\n## Current status\n**Settings** (`/config` to change)")
+	for _, name := range editableSettingKeys() {
+		k := apiredis.KeysMap[name]
+		label := name
+		if d := apiredis.GetHumanReadableDescriptions(k); d != nil {
+			label = d.Name
+		}
+		state := "not set"
+		if strings.TrimSpace(k.GetWithDefault(apiredis.RedisDB, "")) != "" {
+			state = "set"
+		}
+		b.WriteString("\n- " + label + ": " + state)
+	}
+
+	problems := helpers.FilterProblems(helpers.RunHealthChecks(s))
+	if len(problems) == 0 {
+		b.WriteString("\n\n:white_check_mark: All health checks pass.")
+		return b.String()
+	}
+	b.WriteString("\n\n**Health** (full report: `/health`)")
+	shown := problems
+	if len(shown) > setupStatusMaxProblems {
+		shown = shown[:setupStatusMaxProblems]
+	}
+	b.WriteString(helpers.FormatCheckResults(shown))
+	if extra := len(problems) - len(shown); extra > 0 {
+		b.WriteString(fmt.Sprintf("\n... and %d more (see `/health`)", extra))
+	}
+	return b.String()
 }
 
 // leaderboard consolidates the old culvert-summary (table) and

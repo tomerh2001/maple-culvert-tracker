@@ -2,30 +2,46 @@ package helpers
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
 // UpdateCommands updates the slash commands in every served guild.
 //
 // It will update or create new commands, and delete any remaining commands.
-// The commands are identified by their name.
+// The commands are identified by their name. A failing guild never aborts the
+// others: per-guild errors are accumulated (errors.Join) and returned together.
+// The overall outcome ("ok" or the error string) is recorded in the
+// DATA_COMMAND_REGISTRATION_STATUS redis key for the /health diagnostics.
 func UpdateCommands(s *discordgo.Session, commands []*discordgo.ApplicationCommand) error {
+	var errs []error
 	for _, guildID := range data.AllGuildIDs() {
 		if err := updateGuildCommands(s, guildID, commands); err != nil {
-			return err
+			log.Printf("UpdateCommands: guild %s failed: %v", guildID, err)
+			errs = append(errs, fmt.Errorf("guild %s: %w", guildID, err))
 		}
 	}
-	return nil
+	err := errors.Join(errs...)
+	status := "ok"
+	if err != nil {
+		status = err.Error()
+	}
+	if serr := apiredis.DATA_COMMAND_REGISTRATION_STATUS.Set(apiredis.RedisDB, status); serr != nil {
+		log.Println("UpdateCommands: recording registration status failed:", serr)
+	}
+	return err
 }
 
 func updateGuildCommands(s *discordgo.Session, guildID string, commands []*discordgo.ApplicationCommand) error {
 	log.Println("Updating Application slash commands for guild", guildID)
 	cmds, err := s.ApplicationCommands(s.State.User.ID, guildID)
 	if err != nil {
-		return err
+		return fmt.Errorf("listing registered commands: %w", err)
 	}
 	m := map[string]*discordgo.ApplicationCommand{}
 	for _, v := range cmds {
@@ -57,8 +73,7 @@ func updateGuildCommands(s *discordgo.Session, guildID string, commands []*disco
 			if needUpdate {
 				_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, appCommand)
 				if err != nil {
-					log.Panicf("Cannot create '%v' command: %v", appCommand.Name, err)
-					return err
+					return fmt.Errorf("updating command %q: %w", appCommand.Name, err)
 				}
 				log.Println("Updated command " + appCommand.Name)
 			}
@@ -66,8 +81,7 @@ func updateGuildCommands(s *discordgo.Session, guildID string, commands []*disco
 			// Create command
 			_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, appCommand)
 			if err != nil {
-				log.Panicf("Cannot create '%v' command: %v", appCommand.Name, err)
-				return err
+				return fmt.Errorf("creating command %q: %w", appCommand.Name, err)
 			}
 			log.Println("Added new command " + appCommand.Name)
 		}
@@ -77,7 +91,7 @@ func updateGuildCommands(s *discordgo.Session, guildID string, commands []*disco
 		// delete remainder
 		err := s.ApplicationCommandDelete(s.State.User.ID, guildID, v.ID)
 		if err != nil {
-			return err
+			return fmt.Errorf("deleting stale command %q: %w", v.Name, err)
 		}
 	}
 

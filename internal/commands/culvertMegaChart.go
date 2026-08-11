@@ -13,6 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	. "github.com/go-jet/jet/v2/postgres"
 	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
@@ -59,8 +60,25 @@ func culvertMegaChart(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	slices.Reverse(dateLabels)
 
+	// Population aligned with the tracked roster (GetActiveCharacters), same
+	// as the /leaderboard table view.
+	chars, err := cmdhelpers.GetActiveCharacters(apiredis.RedisDB, db.DB)
+	if err != nil {
+		log.Println("leaderboard chart: get active characters:", err)
+		r.Edit("Failed to retrieve characters' data from database. See server logs.")
+		return
+	}
+	if len(*chars) == 0 {
+		r.Edit(noTrackedCharactersMessage)
+		return
+	}
+	charIDs := make([]Expression, 0, len(*chars))
+	for _, c := range *chars {
+		charIDs = append(charIDs, Int64(c.ID))
+	}
+
 	// get all rows for past x week from weeks value
-	stmt := SELECT(Characters.MapleCharacterName.AS("maple_character_name"), CharacterCulvertScores.Score.AS("score"), CharacterCulvertScores.CulvertDate.AS("culvert_date")).FROM(CharacterCulvertScores.INNER_JOIN(Characters, Characters.ID.EQ(CharacterCulvertScores.CharacterID))).WHERE(CharacterCulvertScores.CulvertDate.IN(allDates...).AND(Characters.DiscordUserID.NOT_EQ(String("1")))).ORDER_BY(Characters.MapleCharacterName.ASC(), CharacterCulvertScores.CulvertDate.DESC())
+	stmt := SELECT(Characters.MapleCharacterName.AS("maple_character_name"), CharacterCulvertScores.Score.AS("score"), CharacterCulvertScores.CulvertDate.AS("culvert_date")).FROM(CharacterCulvertScores.INNER_JOIN(Characters, Characters.ID.EQ(CharacterCulvertScores.CharacterID))).WHERE(CharacterCulvertScores.CulvertDate.IN(allDates...).AND(CharacterCulvertScores.CharacterID.IN(charIDs...))).ORDER_BY(Characters.MapleCharacterName.ASC(), CharacterCulvertScores.CulvertDate.DESC())
 
 	dest := []struct {
 		CulvertDate        time.Time

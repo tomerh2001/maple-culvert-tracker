@@ -339,6 +339,10 @@ var Commands = []*discordgo.ApplicationCommand{
 		Description: "ADMINS: How to set this bot up for your guild",
 	},
 	{
+		Name:        "health",
+		Description: "ADMINS: Run the bot's health checks (database, Discord permissions, config)",
+	},
+	{
 		Name:        "reset",
 		Description: "ADMINS: Delete ALL tracked characters and scores, start from scratch",
 		Options: []*discordgo.ApplicationCommandOption{

@@ -84,18 +84,20 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 	culvertDateStr := culvertDate.Format(time.DateOnly)
 
 	scores := map[string]int{}
-	if !scoresFromMessage(s, r, msg, scores) {
+	parseWarnings, ok := scoresFromMessage(s, r, msg, scores)
+	if !ok {
 		return
 	}
 
-	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, false, false, true)
+	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, false, false, true, parseWarnings)
 }
 
 // scoresFromMessage fills scores from a message: a pre-parsed .txt/.json
 // scores file when present (e.g. the gpq_scores.json produced by Parse
 // Images), otherwise OCR of its image attachments. On failure it edits the
-// (deferred) interaction response itself and returns false.
-func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, scores map[string]int) bool {
+// (deferred) interaction response itself and returns ok=false. On success,
+// warnings carries any non-fatal parse defects for the caller's receipt.
+func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, scores map[string]int) (warnings string, ok bool) {
 	var scoresAttachment *discordgo.MessageAttachment
 	for _, a := range msg.Attachments {
 		if strings.HasSuffix(a.Filename, ".txt") || strings.HasSuffix(a.Filename, ".json") {
@@ -107,52 +109,54 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 	if scoresAttachment != nil {
 		if scoresAttachment.Size > 2048*1024 {
 			r.Edit("Attachment size exceeds 2MB limit! Please upload a smaller file.")
-			return false
+			return "", false
 		}
 		body, err := downloadBytes(scoresAttachment.URL)
 		if err != nil {
 			log.Println("scoresFromMessage: failed to download attachment:", err)
 			r.Edit("Failed to download the scores attachment! Please try again.")
-			return false
+			return "", false
 		}
 		if err := json.Unmarshal(body, &scores); err != nil {
 			r.Edit("Failed to parse attachment content! Please ensure it's valid JSON format of { \"character-name\": 123, \"character-name-2\": 456 }.")
-			return false
+			return "", false
 		}
-		return true
+		return "", true
 	}
 
 	imageURLs := collectImageURLs(msg)
 	if len(imageURLs) == 0 {
 		r.Edit("No image or scores attachments found on the selected message.")
-		return false
+		return "", false
 	}
 
 	oc, err := ocrImagesToScores(imageURLs)
 	if err != nil {
 		r.Edit(err.Error())
-		return false
+		return "", false
 	}
 	// Submission safety gates: an incomplete (time-limited) or internally
 	// conflicting parse must never be written to the database.
 	if oc.truncated {
 		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again or crop the screenshot, or run Parse Images and submit the verified JSON instead.")
-		return false
+		return "", false
 	}
 	if len(oc.conflicts) > 0 {
 		r.Edit("Nothing submitted: the images disagree on some characters' scores:\n- " +
 			strings.Join(capList(oc.conflicts, 10), "\n- ") +
 			"\nRun Parse Images on the message, verify the JSON, then submit that instead.")
-		return false
+		return "", false
 	}
 	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
 		r.Edit("Nothing submitted: parsed scores are not in descending order (`" +
 			oc.merged[idx-1].Name + "` -> `" + oc.merged[idx].Name +
 			"`), which usually means an OCR misread. Run Parse Images on the message, verify the JSON, then submit that instead.")
-		return false
+		return "", false
 	}
 	for _, e := range oc.merged {
 		scores[e.Name] = e.Score
 	}
-	return true
+	// Defects are non-fatal (the gates above cover the fatal cases) but they
+	// must reach the receipt - never silently dropped.
+	return defectsWarning(oc.defects), true
 }

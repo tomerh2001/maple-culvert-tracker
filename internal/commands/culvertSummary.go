@@ -22,6 +22,9 @@ func emptyWeekMessage(weekStr string) string {
 	return "No scores recorded for the week of " + weekStr + " yet.\nSubmitters: post a screenshot and right click it -> Apps -> **Submit Scores**."
 }
 
+// noTrackedCharactersMessage is the shared empty-roster state (table and chart).
+const noTrackedCharactersMessage = "No characters are tracked yet. Members can `/register`, submitters can `/track-characters` or just submit a screenshot."
+
 func culvertSummary(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, false)
 
@@ -65,7 +68,7 @@ func culvertSummary(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	if len(*chars) == 0 {
-		r.Edit("No characters are tracked yet. Members can `/register`, submitters can `/track-characters` or just submit a screenshot.")
+		r.Edit(noTrackedCharactersMessage)
 		return
 	}
 	charIDs := make([]Expression, 0, len(*chars))

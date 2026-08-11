@@ -82,6 +82,7 @@ func submitScores(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	scores := map[string]int{}
+	parseWarnings := ""
 	switch {
 	case attachment != nil:
 		errMsg := scoresFromJSONAttachment(attachment, scores)
@@ -100,7 +101,9 @@ func submitScores(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			r.Edit("Failed to fetch that message. Make sure the link is from this server and I can see the channel.")
 			return
 		}
-		if !scoresFromMessage(s, r, msg, scores) {
+		var ok2 bool
+		parseWarnings, ok2 = scoresFromMessage(s, r, msg, scores)
+		if !ok2 {
 			return
 		}
 	default:
@@ -108,7 +111,7 @@ func submitScores(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, overwriteExisting, zeroMissing, autoTrackNew)
+	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, overwriteExisting, zeroMissing, autoTrackNew, parseWarnings)
 }
 
 // scoresFromJSONAttachment downloads and parses a .txt/.json scores file into
@@ -139,8 +142,9 @@ func scoresFromJSONAttachment(attachment *discordgo.MessageAttachment, scores ma
 // (character name -> score) has been parsed from a source: it plans the
 // submission against the tracked roster and existing week data, auto-tracks
 // unknown names (when enabled), applies the changes in one transaction and
-// replies with a receipt.
-func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]int, culvertDate time.Time, culvertDateStr string, overwriteExisting, zeroMissing, autoTrackNew bool) {
+// replies with a receipt. parseWarnings ("" when clean) carries the source's
+// non-fatal parse defects into the receipt.
+func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]int, culvertDate time.Time, culvertDateStr string, overwriteExisting, zeroMissing, autoTrackNew bool, parseWarnings string) {
 	if len(submitted) == 0 {
 		r.Edit("Nothing was parsed from that input - no changes were made.")
 		return
@@ -250,6 +254,7 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]i
 		}
 		receipt += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, culvertDate, changedIDs))
 	}
+	receipt += parseWarnings
 	receipt += rosterMeta.StalenessWarning()
 
 	r.Edit(receipt)
