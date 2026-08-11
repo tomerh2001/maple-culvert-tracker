@@ -514,6 +514,10 @@ type scaledOutcome struct {
 	scale   float64
 	header  bool
 	quality float64
+	// truncated records whether the run's clock had expired by the time THIS
+	// candidate finished parsing: a candidate produced before any expiry is
+	// complete evidence even when a later (losing) pass runs out of budget.
+	truncated bool
 }
 
 // parseQuality scores a candidate parse: quality =
@@ -724,7 +728,7 @@ func parseScaledAround(img image.Image, est float64, firstRowY int, cleanGrid []
 	update := func(rows []parsedRow, engine string, f float64) {
 		q := parseQuality(rows, est)
 		if q > best.quality || (q == best.quality && len(rows) > len(best.rows)) {
-			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: region.found, quality: q}
+			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: region.found, quality: q, truncated: sweepClock.runTruncated()}
 		}
 	}
 	for _, df := range []float64{0, -0.03, 0.03} {
@@ -765,7 +769,7 @@ func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, sweepClo
 	update := func(rows []parsedRow, engine string, f float64, header bool) {
 		q := parseQuality(rows, f)
 		if q > best.quality || (q == best.quality && len(rows) > len(best.rows)) {
-			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: header, quality: q}
+			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: header, quality: q, truncated: sweepClock.runTruncated()}
 		}
 	}
 	for _, f := range []float64{1.25, 1.5, 1.75, 2.0, 2.5, 3.0} {
@@ -799,8 +803,9 @@ type ParseResult struct {
 	// row, never deduplicated. Name/Matched/Confidence reflect roster
 	// reconciliation; RawName and Score are roster-independent.
 	Rows []ScoreEntry
-	// Truncated is set when any matching pass hit its time budget: the rows
-	// may be incomplete and MUST NOT be submitted automatically.
+	// Truncated is set when the winning parse itself hit its time budget
+	// (or nothing parsed and some pass expired): the rows may be incomplete
+	// and MUST NOT be submitted automatically.
 	Truncated bool
 	// Defects are non-fatal parse anomalies (skipped rows, reconciliation
 	// collisions) worth surfacing to the operator.
@@ -852,11 +857,12 @@ func ParseParticipation(imgData []byte, memberNames []string, font *GPQFont) (*P
 	grid := binarizeFull(img)
 	strictRows, strictRegion := parseParticipationGrid(grid, font, strictClock)
 	best := scaledOutcome{
-		rows:    strictRows,
-		engine:  "strict-1x",
-		scale:   1,
-		header:  strictRegion.found,
-		quality: parseQuality(strictRows, 1),
+		rows:      strictRows,
+		engine:    "strict-1x",
+		scale:     1,
+		header:    strictRegion.found,
+		quality:   parseQuality(strictRows, 1),
+		truncated: strictClock.runTruncated(),
 	}
 
 	est0, _ := estimateScaleAndFirstRow(grid)
@@ -889,7 +895,11 @@ func ParseParticipation(imgData []byte, memberNames []string, font *GPQFont) (*P
 		HeaderFound: best.header,
 	}
 	res.Rows = resolveRows(best.rows, memberNames, &res.Defects)
-	res.Truncated = run.truncated.Load()
+	// Truncation is a property of the WINNING candidate: a complete parse
+	// selected by arbitration is trustworthy even when a losing side pass ran
+	// out of budget (slower machines routinely clip the strict-1x junk pass on
+	// scaled screenshots). Only when nothing was parsed does any expiry count.
+	res.Truncated = best.truncated || (len(best.rows) == 0 && run.truncated.Load())
 	return res, nil
 }
 

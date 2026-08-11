@@ -41,6 +41,12 @@ type parseClock struct {
 	run      *parseRun
 }
 
+// runTruncated reports whether the owning run has recorded any deadline
+// expiry so far (used to snapshot per-candidate truncation).
+func (c *parseClock) runTruncated() bool {
+	return c != nil && c.run != nil && c.run.truncated.Load()
+}
+
 // exceeded reports whether the deadline has passed, recording the expiry on
 // the owning run so the parse result can be flagged as truncated.
 func (c *parseClock) exceeded() bool {
