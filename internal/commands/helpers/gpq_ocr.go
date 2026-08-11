@@ -128,43 +128,25 @@ type GPQFont struct {
 	// template widths can be off by a pixel from the on-screen instance
 	// (advancing a rounded width into the next glyph truncates the word).
 	gapAdvance bool
-	// dpMatch: decode words with the global dynamic program instead of the
-	// greedy leftmost-best walk. Smooth-scaled matching needs it: this font
-	// renders I and l as bare vertical bars, which sit at distance ~0 inside
-	// any wider glyph's stem. At native/nearest scales the genuine wider
-	// glyph also scores ~0 and wins the exact width tie, but smooth scaling
-	// leaves it a small residual, and only whole-word accounting (unmatched
-	// ink is paid for) picks the right reading.
-	dpMatch bool
-	// dpInsertPenalty: fixed cost the DP adds per matched glyph, so that
-	// near-free tiny glyphs (commas, bare bars) do not carpet the decode by
-	// "explaining" stray fragments that are cheaper to skip. Zero for the
-	// digits-only cell re-decode: there a dropped digit corrupts the score,
-	// and digit templates are too big to phantom-match fragments anyway.
-	dpInsertPenalty int
 
 	scaledMu    sync.Mutex
-	scaledCache map[scaledFontKey]*GPQFont
+	scaledCache map[int]*GPQFont
+
+	// grayMu/grayCache cache the gray (intensity-field) template sets used by
+	// the smooth NCC matcher, per scale percent (see gpq_ocr_ncc.go).
+	grayMu    sync.Mutex
+	grayCache map[int]*grayFont
 }
 
 // withTolerance returns a view of the font using the given match tolerance.
 func (f *GPQFont) withTolerance(tol float64) *GPQFont {
 	return &GPQFont{
-		glyphs:          f.glyphs,
-		buckets:         f.buckets,
-		tol:             tol,
-		scale:           f.scale,
-		gapAdvance:      f.gapAdvance,
-		dpMatch:         f.dpMatch,
-		dpInsertPenalty: f.dpInsertPenalty,
+		glyphs:     f.glyphs,
+		buckets:    f.buckets,
+		tol:        tol,
+		scale:      f.scale,
+		gapAdvance: f.gapAdvance,
 	}
-}
-
-// withDPMatch returns a view of the font with DP word decoding on or off.
-func (f *GPQFont) withDPMatch(dp bool) *GPQFont {
-	v := f.withTolerance(f.tol)
-	v.dpMatch = dp
-	return v
 }
 
 // digitsOnly returns a view of the font restricted to digit and comma
@@ -181,11 +163,6 @@ func (f *GPQFont) digitsOnly() *GPQFont {
 	}
 	v.glyphs = glyphs
 	v.buckets = buildBuckets(glyphs)
-	if v.dpInsertPenalty > 0 {
-		// Keep only a small penalty: a dropped digit corrupts the score, so
-		// matching must stay cheaper than skipping a slightly-noisy digit.
-		v.dpInsertPenalty = int(v.scaleFactor()*v.scaleFactor() + 0.5)
-	}
 	return v
 }
 
@@ -225,22 +202,6 @@ func (f *GPQFont) effBandH(h, glyphH int) int {
 	return h
 }
 
-// glyphScaleMode selects how templates are upscaled to a fractional UI scale.
-type glyphScaleMode int
-
-const (
-	// scaleModeNearest mirrors crisp nearest-neighbour UI scaling.
-	scaleModeNearest glyphScaleMode = iota
-	// scaleModeSmooth mirrors bilinear (smooth) UI scaling: the binary
-	// template is bilinearly interpolated and thresholded at 0.5.
-	scaleModeSmooth
-)
-
-type scaledFontKey struct {
-	pct  int // scale factor in percent
-	mode glyphScaleMode
-}
-
 // gpqScalePhases are the sub-pixel phase offsets scaled templates are
 // generated at. A glyph rendered by the client's upscaler lands on the
 // scaling grid at an arbitrary sub-pixel phase (per glyph!), which changes
@@ -250,40 +211,32 @@ type scaledFontKey struct {
 // which keeps genuine glyphs inside the strict match tolerance.
 var gpqScalePhases = []float64{0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875}
 
-// gpqScalePhasesSmooth: smooth (bilinear) templates change much more slowly
-// with phase than nearest ones - interpolation already blends neighbouring
-// positions - so quarter-pixel steps suffice and keep the variant set small.
-var gpqScalePhasesSmooth = []float64{0, 0.25, 0.5, 0.75}
-
 // scaledFont returns a font whose glyph templates are upscaled by factor fac
-// using the given mode, with the given match tolerance. Every glyph is
-// generated at each (x, y) phase pair of gpqScalePhases and the variants are
-// flattened into the glyph list (the matcher's prefilter keeps this cheap).
-// Scaled glyph sets are cached per (factor, mode) on the receiver.
-func (f *GPQFont) scaledFont(fac float64, mode glyphScaleMode, tol float64) *GPQFont {
+// with crisp nearest-neighbour sampling (mirroring lossless UI scaling), at
+// the given match tolerance. Every glyph is generated at each (x, y) phase
+// pair of gpqScalePhases and the variants are flattened into the glyph list
+// (the matcher's prefilter keeps this cheap). Scaled glyph sets are cached
+// per factor on the receiver. Smoothly-scaled screenshots are not matched
+// with binary templates at all - see the NCC matcher in gpq_ocr_ncc.go.
+func (f *GPQFont) scaledFont(fac float64, tol float64) *GPQFont {
 	pct := int(fac*100 + 0.5)
 	if pct <= 100 {
 		return f.withTolerance(tol)
 	}
-	key := scaledFontKey{pct: pct, mode: mode}
 	f.scaledMu.Lock()
-	cached := f.scaledCache[key]
+	cached := f.scaledCache[pct]
 	f.scaledMu.Unlock()
 	if cached == nil {
 		exact := float64(pct) / 100
-		phases := gpqScalePhases
-		if mode == scaleModeSmooth {
-			phases = gpqScalePhasesSmooth
-		}
 		glyphs := make([]gpqGlyph, 0, len(f.glyphs)*4)
 		var sb strings.Builder
 		for i := range f.glyphs {
 			// Many phases collapse to the same bitmap (all of them for
 			// integer scales, most for simple ratios): deduplicate per glyph.
 			seen := map[string]bool{}
-			for _, dy := range phases {
-				for _, dx := range phases {
-					g := scaleGlyph(&f.glyphs[i], exact, mode, dx, dy)
+			for _, dy := range gpqScalePhases {
+				for _, dx := range gpqScalePhases {
+					g := scaleGlyph(&f.glyphs[i], exact, dx, dy)
 					sb.Reset()
 					sb.WriteByte(byte(g.w))
 					sb.WriteByte(byte(g.h))
@@ -307,31 +260,26 @@ func (f *GPQFont) scaledFont(fac float64, mode glyphScaleMode, tol float64) *GPQ
 		cached = &GPQFont{glyphs: glyphs, buckets: buildBuckets(glyphs), scale: exact, gapAdvance: true}
 		f.scaledMu.Lock()
 		if f.scaledCache == nil {
-			f.scaledCache = map[scaledFontKey]*GPQFont{}
+			f.scaledCache = map[int]*GPQFont{}
 		}
-		f.scaledCache[key] = cached
+		f.scaledCache[pct] = cached
 		f.scaledMu.Unlock()
 	}
-	v := &GPQFont{
+	return &GPQFont{
 		glyphs:     cached.glyphs,
 		buckets:    cached.buckets,
 		tol:        tol,
 		scale:      cached.scale,
 		gapAdvance: true,
-		dpMatch:    mode == scaleModeSmooth,
 	}
-	if v.dpMatch {
-		v.dpInsertPenalty = int(3*fac*fac + 0.5)
-	}
-	return v
 }
 
-// scaleGlyph upscales one binary template by fac at sub-pixel phase (dx, dy).
-// An instance whose first source column starts at image column X0 satisfies
-// image col x -> source col floor((x-X0+d)/fac) with d = ceil(c0*fac)-c0*fac;
-// generating templates for a grid of d values lets the matcher cover every
-// on-screen phase.
-func scaleGlyph(g *gpqGlyph, fac float64, mode glyphScaleMode, dx, dy float64) gpqGlyph {
+// scaleGlyph upscales one binary template by fac at sub-pixel phase (dx, dy)
+// with nearest-neighbour sampling. An instance whose first source column
+// starts at image column X0 satisfies image col x -> source col
+// floor((x-X0+d)/fac) with d = ceil(c0*fac)-c0*fac; generating templates for
+// a grid of d values lets the matcher cover every on-screen phase.
+func scaleGlyph(g *gpqGlyph, fac, dx, dy float64) gpqGlyph {
 	w := int(math.Ceil(float64(g.w)*fac - dx))
 	h := int(math.Ceil(float64(g.h)*fac - dy))
 	if w < 1 {
@@ -344,23 +292,15 @@ func scaleGlyph(g *gpqGlyph, fac float64, mode glyphScaleMode, dx, dy float64) g
 	for y := 0; y < h; y++ {
 		row := make([]bool, w)
 		for x := 0; x < w; x++ {
-			if mode == scaleModeNearest {
-				sy := int((float64(y) + dy) / fac)
-				sx := int((float64(x) + dx) / fac)
-				if sy > g.h-1 {
-					sy = g.h - 1
-				}
-				if sx > g.w-1 {
-					sx = g.w - 1
-				}
-				row[x] = g.bits[sy][sx]
-			} else {
-				// Threshold slightly above 0.5: a 1px gap between two ink
-				// features interpolates to exactly 0.5, and >= 0.5 would
-				// weld it shut - turning e.g. the dot gap of 'i' into a
-				// solid bar that then matches inside any vertical stroke.
-				row[x] = smoothSample(g, (float64(x)+dx)/fac, (float64(y)+dy)/fac) >= 0.55
+			sy := int((float64(y) + dy) / fac)
+			sx := int((float64(x) + dx) / fac)
+			if sy > g.h-1 {
+				sy = g.h - 1
 			}
+			if sx > g.w-1 {
+				sx = g.w - 1
+			}
+			row[x] = g.bits[sy][sx]
 		}
 		bits[y] = row
 	}
@@ -399,38 +339,10 @@ func countCols(bits [][]bool) []int {
 // gpqSmoothHalo models the source screenshot's own glyph antialiasing: the
 // game renders a partial-intensity halo around every ink pixel, which the
 // strict 1x binarization discards but a smooth upscale blends back in. The
-// template's smooth model gives non-ink pixels adjacent to ink this
-// fractional value so the upscaled template fattens the same way the real
-// image does.
+// NCC gray templates (gpq_ocr_ncc.go) give non-ink pixels adjacent to ink
+// this fractional value so the resampled template fattens the same way the
+// real image does.
 const gpqSmoothHalo = 0.35
-
-// smoothSample bilinearly interpolates the template as an intensity field
-// (ink = 1, halo neighbours = gpqSmoothHalo, elsewhere 0), treating
-// out-of-bounds as background - matching how bilinear image scaling blends
-// glyph edges into the background.
-func smoothSample(g *gpqGlyph, sx, sy float64) float64 {
-	x0 := int(sx)
-	y0 := int(sy)
-	fx := sx - float64(x0)
-	fy := sy - float64(y0)
-	ink := func(x, y int) bool {
-		if x < 0 || y < 0 || x >= g.w || y >= g.h {
-			return false
-		}
-		return g.bits[y][x]
-	}
-	at := func(x, y int) float64 {
-		if ink(x, y) {
-			return 1
-		}
-		if ink(x-1, y) || ink(x+1, y) || ink(x, y-1) || ink(x, y+1) {
-			return gpqSmoothHalo
-		}
-		return 0
-	}
-	return at(x0, y0)*(1-fx)*(1-fy) + at(x0+1, y0)*fx*(1-fy) +
-		at(x0, y0+1)*(1-fx)*fy + at(x0+1, y0+1)*fx*fy
-}
 
 var (
 	gpqFontOnce sync.Once
@@ -684,9 +596,6 @@ func colPrefix(rows [][]bool) []int {
 // template covers them. Lossless sources pass the same grid twice, which
 // reduces exactly to strict binary matching.
 func matchRowDual(loose, tight [][]bool, font *GPQFont) string {
-	if font.dpMatch {
-		return matchRowDP(loose, tight, font)
-	}
 	h := len(loose)
 	if h == 0 {
 		return ""
@@ -875,236 +784,6 @@ func bestGlyphAt(loose, tight [][]bool, loosePre, tightPre []int, x int, font *G
 		}
 	}
 	return bestCh, bestW, bestDn, found
-}
-
-// glyphCand is one acceptable glyph match at a column (see matchRowDP).
-type glyphCand struct {
-	r rune
-	w int // template width (advance)
-	d int // absolute match distance in pixels
-}
-
-// glyphCandidatesAt collects every template match at column x whose
-// normalised distance is within tolerance, using the same distance model as
-// bestGlyphAt. Results are sorted by (distance, -width, rune).
-func glyphCandidatesAt(loose, tight [][]bool, loosePre, tightPre []int, x int, font *GPQFont) []glyphCand {
-	h := len(loose)
-	w := len(loose[0])
-	tol := font.matchTol()
-	cands := []glyphCand{}
-	for bi := range font.buckets {
-		b := &font.buckets[bi]
-		if x+b.w > w {
-			break // buckets are width-ascending: the rest cannot fit either
-		}
-		bLoose := loosePre[x+b.w] - loosePre[x]
-		bTight := tightPre[x+b.w] - tightPre[x]
-		bCut := int(tol * float64(font.effBandH(h, b.maxH)*b.w))
-		if bTight-b.maxInk > bCut || b.minInk-bLoose > bCut {
-			continue
-		}
-		for _, gi := range b.idx {
-			g := &font.glyphs[gi]
-			if g.h > h {
-				continue
-			}
-			looseTotal := bLoose
-			tightTotal := bTight
-			hEff := font.effBandH(h, g.h)
-			cutoff := int(tol * float64(hEff*g.w))
-			if tightTotal-g.ink > cutoff || g.ink-looseTotal > cutoff {
-				continue
-			}
-			// Per-column lower bound (valid at every vertical offset): each
-			// column costs at least the certain ink the template cannot cover,
-			// or the template ink the image cannot provide (tight is a subset of
-			// loose, so at most one of the two is positive per column).
-			lb := 0
-			for c := 0; c < g.w; c++ {
-				lCol := loosePre[x+c+1] - loosePre[x+c]
-				tCol := tightPre[x+c+1] - tightPre[x+c]
-				if d := g.cols[c] - lCol; d > 0 {
-					lb += d
-				} else if d := tCol - g.cols[c]; d > 0 {
-					lb += d
-				}
-				if lb > cutoff {
-					break
-				}
-			}
-			if lb > cutoff {
-				continue
-			}
-			bestD := -1
-			yStart := 0
-			if g.r == ',' {
-				// A comma hangs off the baseline: only offsets that keep it in
-				// the band's bottom rows are geometrically valid. Without this,
-				// the tiny template floats mid-band and "explains" fragments of
-				// eroded digits.
-				if m := h - g.h - scalePx(3, font.scaleFactor()); m > 0 {
-					yStart = m
-				}
-			}
-			for y := yStart; y <= h-g.h; y++ {
-				abortD := cutoff + 1
-				if bestD >= 0 && bestD < cutoff {
-					abortD = bestD
-				}
-				dIn := 0
-				tightInBand := 0
-				for iy := 0; iy < g.h; iy++ {
-					trow := g.bits[iy]
-					lrow := loose[y+iy]
-					srow := tight[y+iy]
-					for ix := 0; ix < g.w; ix++ {
-						if trow[ix] {
-							if !lrow[x+ix] {
-								dIn++
-							}
-						} else if srow[x+ix] {
-							dIn++
-						}
-						if srow[x+ix] {
-							tightInBand++
-						}
-					}
-					if dIn > abortD {
-						break
-					}
-				}
-				if dIn > abortD {
-					continue
-				}
-				d := dIn + (tightTotal - tightInBand)
-				if bestD < 0 || d < bestD {
-					bestD = d
-					if bestD == 0 {
-						break
-					}
-				}
-			}
-			if bestD < 0 || bestD > cutoff {
-				continue
-			}
-			// Keep the best variant per (rune, width).
-			dup := false
-			for ci := range cands {
-				if cands[ci].r == g.r && cands[ci].w == g.w {
-					dup = true
-					if bestD < cands[ci].d {
-						cands[ci].d = bestD
-					}
-					break
-				}
-			}
-			if !dup {
-				cands = append(cands, glyphCand{r: g.r, w: g.w, d: bestD})
-			}
-		}
-	}
-	sort.Slice(cands, func(i, j int) bool {
-		if cands[i].d != cands[j].d {
-			return cands[i].d < cands[j].d
-		}
-		if cands[i].w != cands[j].w {
-			return cands[i].w > cands[j].w
-		}
-		return cands[i].r < cands[j].r
-	})
-	return cands
-}
-
-// matchRowDP decodes the first "word" of a row band by globally minimising
-// unexplained certain ink: each glyph match costs its distance, each skipped
-// column costs its certain-ink pixels, and the cheapest full explanation of
-// the word wins. Unlike the greedy walk, a bare-bar glyph (I, l) matching
-// inside a wider glyph's stem loses: the rest of the wider glyph would have
-// to be skipped at full price.
-func matchRowDP(loose, tight [][]bool, font *GPQFont) string {
-	h := len(loose)
-	if h == 0 {
-		return ""
-	}
-	w := len(loose[0])
-	loosePre := colPrefix(loose)
-	tightPre := loosePre
-	if &tight[0] != &loose[0] {
-		tightPre = colPrefix(tight)
-	}
-	colInk := func(c int) bool { return loosePre[c+1] > loosePre[c] }
-	tightCol := func(c int) int { return tightPre[c+1] - tightPre[c] }
-
-	// First word segment [s0, s1): from the first ink column to the last ink
-	// column before a gap of >= gapStop blank columns.
-	gapStop := font.gapStopPx()
-	s0 := 0
-	for s0 < w && !colInk(s0) {
-		s0++
-	}
-	if s0 == w {
-		return ""
-	}
-	s1 := s0
-	blank := 0
-	for c := s0; c < w; c++ {
-		if colInk(c) {
-			s1 = c + 1
-			blank = 0
-		} else {
-			blank++
-			if blank >= gapStop {
-				break
-			}
-		}
-	}
-
-	n := s1 - s0
-	const inf = int(^uint(0) >> 2)
-	insertPenalty := font.dpInsertPenalty
-	dp := make([]int, n+1)
-	fromI := make([]int, n+1)
-	fromCh := make([]rune, n+1)
-	for i := 1; i <= n; i++ {
-		dp[i] = inf
-	}
-	for i := 0; i < n; i++ {
-		if dp[i] == inf {
-			continue
-		}
-		if i%16 == 0 && deadlineExceeded() {
-			return ""
-		}
-		if c := dp[i] + tightCol(s0+i); c < dp[i+1] {
-			dp[i+1] = c
-			fromI[i+1] = i
-			fromCh[i+1] = 0
-		}
-		if !colInk(s0 + i) {
-			continue
-		}
-		for _, cand := range glyphCandidatesAt(loose, tight, loosePre, tightPre, s0+i, font) {
-			j := i + cand.w
-			if j > n {
-				j = n
-			}
-			if c := dp[i] + cand.d + insertPenalty; c < dp[j] {
-				dp[j] = c
-				fromI[j] = i
-				fromCh[j] = cand.r
-			}
-		}
-	}
-	runes := []rune{}
-	for i := n; i > 0; i = fromI[i] {
-		if fromCh[i] != 0 {
-			runes = append(runes, fromCh[i])
-		}
-	}
-	for l, r := 0, len(runes)-1; l < r; l, r = l+1, r-1 {
-		runes[l], runes[r] = runes[r], runes[l]
-	}
-	return string(runes)
 }
 
 // glyphKeyLess compares match keys (dn, -width, rune) ascending.

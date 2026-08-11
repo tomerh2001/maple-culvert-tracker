@@ -20,11 +20,12 @@ import (
 // where the name is simply the leftmost word.
 //
 // Scaled screenshots (Retina 2x, fractional Windows/display scaling) are
-// handled by scaled-template matching: the glyph templates are upscaled to
-// the image's detected UI scale (crisp nearest-neighbour and smooth
-// thresholded-bilinear variants) and matched at the image's native
-// resolution, so no screenshot pixels are destroyed by resampling. The
-// matcher stays strict: only the game's bitmap font is accepted.
+// handled by scaled-template matching at the image's native resolution, so no
+// screenshot pixels are destroyed by resampling: crisply-scaled text is
+// matched with nearest-neighbour-upscaled binary templates under the strict
+// tolerance, and smoothly-scaled or re-encoded text with the normalized
+// cross-correlation matcher (gpq_ocr_ncc.go). Either way only the game's
+// bitmap font geometry is accepted.
 
 type ocrWord struct {
 	text string
@@ -150,80 +151,14 @@ func binarizeFull(img image.Image) [][]bool {
 	return binarizeCrop(img, 0, 0, b.Dx())
 }
 
-// Binarization floors for smooth-scaled (bilinear) screenshots, where glyph
-// edges blend the two text colours (#FFFFFF white, #B3B3B3 gray) with the
-// dark window background - and the source screenshot's own antialiasing
-// makes edge intensities unreliable. Each text colour therefore gets TWO
-// cuts: a loose one (any plausible ink) and a tight one (certainly ink);
-// pixels between them are treated as don't-care by the matcher (see
-// matchRowDual). Rows are single-colour, so parseTableRows picks the pair
-// per row band: white rows are identified by near-full white cores (gray
-// text never blends that high).
+// Binarization floor for the halo-inclusive segmentation plane of smooth
+// screenshots (see buildNCCPlane): any plausible ink of either text colour
+// (#FFFFFF white, #B3B3B3 gray) blended toward the dark window background
+// stays above it, while backgrounds and window chrome stay below.
 var (
-	gpqSmoothWhiteLooseC = 117 // ~0.38 white-over-background blend
-	gpqSmoothWhiteTightC = 161 // ~0.58 white-over-background blend
-	gpqSmoothGrayLooseC  = 88  // ~0.38 gray-over-background blend
-	gpqSmoothGrayTightC  = 118 // ~0.58 gray-over-background blend
-	gpqSmoothBrightMinC  = 235 // near-pure white core (row colour classifier)
-	gpqSmoothSpreadMax   = 40  // text/background blends stay near-neutral
+	gpqSmoothGrayLooseC = 88 // ~0.38 gray-over-background blend
+	gpqSmoothSpreadMax  = 40 // text/background blends stay near-neutral
 )
-
-// binarizeFullMin binarizes the whole image: ink iff every channel >= minC
-// and the channel spread <= gpqSmoothSpreadMax.
-func binarizeFullMin(img image.Image, minC int) [][]bool {
-	b := img.Bounds()
-	w, h := b.Dx(), b.Dy()
-	out := make([][]bool, h)
-	for y := 0; y < h; y++ {
-		row := make([]bool, w)
-		for x := 0; x < w; x++ {
-			r32, g32, b32, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			r, g, bl := int(r32>>8), int(g32>>8), int(b32>>8)
-			maxc, minc := r, r
-			if g > maxc {
-				maxc = g
-			}
-			if bl > maxc {
-				maxc = bl
-			}
-			if g < minc {
-				minc = g
-			}
-			if bl < minc {
-				minc = bl
-			}
-			row[x] = minc >= minC && maxc-minc <= gpqSmoothSpreadMax
-		}
-		out[y] = row
-	}
-	return out
-}
-
-// tableGrids bundles the ink planes a parse works on. detect drives band
-// detection and segmentation; bandPlanes returns the loose/tight decode pair
-// for one row band. Lossless sources set only detect (loose = tight).
-type tableGrids struct {
-	detect                 [][]bool
-	whiteLoose, whiteTight [][]bool
-	grayLoose, grayTight   [][]bool
-	bright                 [][]bool
-}
-
-// bandPlanes returns the loose/tight ink planes a band spanning image rows
-// [y0, y1) should be decoded against.
-func (t *tableGrids) bandPlanes(y0, y1, x0, x1 int) (loose, tight [][]bool) {
-	if t.bright == nil {
-		return t.detect, t.detect
-	}
-	for y := y0; y < y1; y++ {
-		for x := x0; x < x1; x++ {
-			if t.bright[y][x] {
-				return t.whiteLoose, t.whiteTight
-			}
-		}
-	}
-	return t.grayLoose, t.grayTight
-}
 
 // fixtureRowPitch is the vertical distance between table text row band starts
 // at 1x (measured on the provided fixtures: 24px between consecutive rows).
@@ -383,13 +318,12 @@ func locateTable(loose, tight [][]bool, font *GPQFont, firstRowY int) tableRegio
 	return tableRegion{x1: width, nameLimit: scalePx(legacyNameColWidth, s)}
 }
 
-// parseTableRows extracts data rows from the region of the grids. A data row
+// parseTableRows extracts data rows from the region of the grid. A data row
 // must have at least 3 numeric columns; the culvert score is the
 // second-to-last one (Flag Race is last). The name is decoded from the name
 // column zone only, since long names run into the Job column with less than a
 // word gap.
-func parseTableRows(grids *tableGrids, region tableRegion, font *GPQFont, memberNames []string) []ScoreEntry {
-	grid := grids.detect
+func parseTableRows(grid [][]bool, region tableRegion, font *GPQFont, memberNames []string) []ScoreEntry {
 	sub := make([][]bool, 0, len(grid)-region.headerY1)
 	for y := region.headerY1; y < len(grid); y++ {
 		sub = append(sub, grid[y][region.x0:region.x1])
@@ -412,13 +346,8 @@ func parseTableRows(grids *tableGrids, region tableRegion, font *GPQFont, member
 		wg.Add(1)
 		go func(bandIdx int, band [2]int) {
 			defer wg.Done()
-			loose, tight := grids.bandPlanes(region.headerY1+band[0], region.headerY1+band[1], region.x0, region.x1)
-			rowsL := make([][]bool, band[1]-band[0])
-			rowsT := make([][]bool, band[1]-band[0])
-			for y := range rowsL {
-				rowsL[y] = loose[region.headerY1+band[0]+y][region.x0:region.x1]
-				rowsT[y] = tight[region.headerY1+band[0]+y][region.x0:region.x1]
-			}
+			rowsL := sub[band[0]:band[1]]
+			rowsT := rowsL
 			words := segmentWordsDual(rowsL, rowsT, font)
 			if len(words) < 2 {
 				return
@@ -511,34 +440,23 @@ func parseTableRows(grids *tableGrids, region tableRegion, font *GPQFont, member
 // parseParticipationGrid runs header detection + row extraction on one grid.
 func parseParticipationGrid(grid [][]bool, font *GPQFont, memberNames []string) ([]ScoreEntry, bool) {
 	region := locateTable(grid, grid, font, -1)
-	return parseTableRows(&tableGrids{detect: grid}, region, font, memberNames), region.found
+	return parseTableRows(grid, region, font, memberNames), region.found
 }
 
-// Scaled-match tolerances per scaling mode. Nearest-neighbour scaling is
+// Scaled-match tolerance for nearest-neighbour (crisp) scaling: it is
 // lossless, and the phased template variants reproduce it exactly (or within
 // a boundary pixel or two for odd scale ratios), so the native strict
 // tolerance holds - which matters: the score column contains thousands
 // separators with no font template, and a looser tolerance lets wide letters
-// swallow "separator+digit" spans (e.g. ",7" decoding as T). Smooth scaling
-// antialiases glyph edges, so its thresholded templates need a little slack.
-// Both are kept as tight as the scale gauntlet allows - the matcher must
-// still only accept the game's bitmap font.
+// swallow "separator+digit" spans (e.g. ",7" decoding as T).
 var (
 	gpqScaledTolNearest = gpqMatchTol
-	gpqScaledTolSmooth  = 0.16
 	// gpqCulvertTol: the culvert-cell re-decode competes digits against
 	// digits only, so a looser tolerance is safe there - the right digit
 	// still wins on distance, and narrow glyphs ('1') survive the extra
 	// quantisation noise fractional scales give them.
 	gpqCulvertTol = 0.22
 )
-
-func scaledTol(mode glyphScaleMode) float64 {
-	if mode == scaleModeNearest {
-		return gpqScaledTolNearest
-	}
-	return gpqScaledTolSmooth
-}
 
 // gpqMinScaledEst: below this pitch-derived scale estimate the image is
 // treated as native 1x and the strict parse is authoritative.
@@ -549,108 +467,123 @@ func betterParse(e []ScoreEntry, header bool, best []ScoreEntry, bestHeader bool
 	return len(e) > len(best) || (len(e) == len(best) && header && !bestHeader)
 }
 
-// gpqScaleModes in evaluation order.
-var gpqScaleModes = []glyphScaleMode{scaleModeNearest, scaleModeSmooth}
-
-// scaledModeGrids builds the ink planes each scaling mode matches against.
-// Nearest-neighbour scaling preserves the exact text colours, so it keeps the
-// lossless strict grid. Smooth scaling antialiases glyph edges, so each text
-// colour gets a loose/tight cut pair (see tableGrids).
-func scaledModeGrids(img image.Image, strict [][]bool) map[glyphScaleMode]*tableGrids {
-	grayLoose := binarizeFullMin(img, gpqSmoothGrayLooseC)
-	return map[glyphScaleMode]*tableGrids{
-		scaleModeNearest: {detect: strict},
-		scaleModeSmooth: {
-			detect:     grayLoose,
-			grayLoose:  grayLoose,
-			grayTight:  binarizeFullMin(img, gpqSmoothGrayTightC),
-			whiteLoose: binarizeFullMin(img, gpqSmoothWhiteLooseC),
-			whiteTight: binarizeFullMin(img, gpqSmoothWhiteTightC),
-			bright:     binarizeFullMin(img, gpqSmoothBrightMinC),
-		},
-	}
-}
-
-// locateOn returns the ink planes header detection runs on for a mode: the
-// header row is always white text, so smooth mode locates it on the white
-// pair.
-func locateOn(grids *tableGrids) (loose, tight [][]bool) {
-	if grids.whiteLoose != nil {
-		return grids.whiteLoose, grids.whiteTight
-	}
-	return grids.detect, grids.detect
-}
-
 // parseScaledAround matches scaled glyph templates at the image's native
 // resolution, searching a small grid of scales around the pitch estimate and
-// both scaling modes. The table is located once (its position in image pixels
-// does not depend on the candidate template scale).
+// both scaling modes: crisp nearest-neighbour (binary strict matching) and
+// smooth (NCC against the luminance plane, see gpq_ocr_ncc.go). The table is
+// located once (its position in image pixels does not depend on the candidate
+// template scale).
 func parseScaledAround(img image.Image, est float64, firstRowY int, strict [][]bool, font *GPQFont, memberNames []string, deadline time.Time) ([]ScoreEntry, bool) {
-	grids := scaledModeGrids(img, strict)
+	nccP := buildNCCPlane(img, est)
 
-	// Locate the header: greedy decoding first (fast), the smooth DP decoder
-	// only as a fallback (a whole-image DP sweep is expensive).
-	var region tableRegion
-	for _, mode := range gpqScaleModes {
-		loose, tight := locateOn(grids[mode])
-		region = locateTable(loose, tight, font.scaledFont(est, mode, scaledTol(mode)).withDPMatch(false), firstRowY)
-		if region.found {
-			break
+	// Full-window screenshots carry chrome the pre-cropped tables never had:
+	// scrollbar thumbs and frame lines binarize as bright neutral ink that
+	// vertically welds row bands together. Work on a cleaned copy (the native
+	// 1x path keeps the raw grid).
+	strictClean := cloneGrid(strict)
+	clearLongVerticalRuns(strictClean, scalePx(gpqNCCMaxRun1x, est))
+
+	// Locate the header: crisp nearest-neighbour matching on the strict grid
+	// first (fast), NCC over the luminance plane otherwise (real client
+	// windows render the header in a different smooth font, which template
+	// matching cannot read - the NCC locator derives the columns from the
+	// data rows instead).
+	region := locateTable(strictClean, strictClean, font.scaledFont(est, gpqScaledTolNearest), firstRowY)
+	if !region.found {
+		region = locateTableNCC(nccP, font.grayScaledFont(est), firstRowY)
+	}
+
+	// Rank competing parses by how many rows reconciled to known members
+	// before row count: an engine mismatched to the input (binary matching on
+	// a smoothly-scaled image) can fabricate many rows of junk that would
+	// out-count a shorter, correct parse, but junk decodes do not reconcile.
+	rec := reconciledCounter(memberNames)
+	best := []ScoreEntry{}
+	bestRec := 0
+	update := func(e []ScoreEntry) {
+		if r := rec(e); r > bestRec || (r == bestRec && len(e) > len(best)) {
+			best, bestRec = e, r
 		}
 	}
-	if !region.found {
-		loose, tight := locateOn(grids[scaleModeSmooth])
-		region = locateTable(loose, tight, font.scaledFont(est, scaleModeSmooth, scaledTol(scaleModeSmooth)), firstRowY)
-	}
-
-	best := []ScoreEntry{}
 	for _, df := range []float64{0, -0.03, 0.03} {
 		f := est + df
 		if f < 1.01 {
 			continue
 		}
-		for _, mode := range gpqScaleModes {
-			if time.Now().After(deadline) {
-				return best, region.found
-			}
-			sf := font.scaledFont(f, mode, scaledTol(mode))
-			e := parseTableRows(grids[mode], region, sf, memberNames)
-			if len(e) > len(best) {
-				best = e
-			}
+		if time.Now().After(deadline) {
+			return best, region.found
+		}
+		sf := font.scaledFont(f, gpqScaledTolNearest)
+		update(parseTableRows(strictClean, region, sf, memberNames))
+		// The smooth NCC pass costs seconds; skip it when the lossless
+		// nearest match already recovered essentially every row.
+		if bestRec < 15 && !time.Now().After(deadline) {
+			update(parseTableRowsNCC(nccP, region, font.grayScaledFont(f), memberNames))
 		}
 		// The phase variants absorb small scale-estimate error, so the pitch
 		// estimate alone almost always suffices; widen the search only when
 		// it clearly under-delivers.
-		if df == 0 && len(best) >= 10 {
+		if df == 0 && bestRec >= 10 {
 			break
 		}
 	}
 	return best, region.found
 }
 
+// reconciledCounter returns a function counting how many parsed entries carry
+// a known member name.
+func reconciledCounter(memberNames []string) func([]ScoreEntry) int {
+	set := make(map[string]bool, len(memberNames))
+	for _, m := range memberNames {
+		set[m] = true
+	}
+	return func(entries []ScoreEntry) int {
+		n := 0
+		for _, e := range entries {
+			if set[e.Name] {
+				n++
+			}
+		}
+		return n
+	}
+}
+
 // parseScaledLadder is the fallback when the strict parse found nothing and
 // the image has too few rows to estimate a pitch: sweep a coarse scale
 // ladder with both scaling modes.
 func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, memberNames []string, deadline time.Time) ([]ScoreEntry, bool) {
-	grids := scaledModeGrids(img, strict)
+	// Clean chrome runs sized for the largest ladder scale (larger runs are
+	// chrome at every attempted scale).
+	strictClean := cloneGrid(strict)
+	clearLongVerticalRuns(strictClean, scalePx(gpqNCCMaxRun1x, 3.0))
+	rec := reconciledCounter(memberNames)
 	best := []ScoreEntry{}
 	bestHeader := false
+	bestRec := 0
+	update := func(e []ScoreEntry, header bool) {
+		if r := rec(e); r > bestRec || (r == bestRec && betterParse(e, header, best, bestHeader)) {
+			best, bestHeader, bestRec = e, header, r
+		}
+	}
 	for _, f := range []float64{1.25, 1.5, 1.75, 2.0, 2.5, 3.0} {
-		for _, mode := range gpqScaleModes {
-			if time.Now().After(deadline) {
-				return best, bestHeader
-			}
-			sf := font.scaledFont(f, mode, scaledTol(mode))
-			loose, tight := locateOn(grids[mode])
-			region := locateTable(loose, tight, sf, -1)
-			e := parseTableRows(grids[mode], region, sf, memberNames)
-			if betterParse(e, region.found, best, bestHeader) {
-				best, bestHeader = e, region.found
-			}
-			if bestHeader && len(best) >= 10 {
-				return best, bestHeader
-			}
+		if time.Now().After(deadline) {
+			return best, bestHeader
+		}
+		sf := font.scaledFont(f, gpqScaledTolNearest)
+		region := locateTable(strictClean, strictClean, sf, -1)
+		update(parseTableRows(strictClean, region, sf, memberNames), region.found)
+		if bestHeader && bestRec >= 10 {
+			return best, bestHeader
+		}
+		if time.Now().After(deadline) {
+			return best, bestHeader
+		}
+		nccP := buildNCCPlane(img, f)
+		gf := font.grayScaledFont(f)
+		nccRegion := locateTableNCC(nccP, gf, -1)
+		update(parseTableRowsNCC(nccP, nccRegion, gf, memberNames), nccRegion.found)
+		if bestHeader && bestRec >= 10 {
+			return best, bestHeader
 		}
 	}
 	return best, bestHeader
