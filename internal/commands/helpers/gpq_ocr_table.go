@@ -725,10 +725,10 @@ func parseScaledAround(img image.Image, est float64, firstRowY int, cleanGrid []
 
 	n := expectedRowCount(nccP.loose, regionNCC, est)
 	best := scaledOutcome{engine: "scaled-binary", scale: est, header: region.found}
-	update := func(rows []parsedRow, engine string, f float64) {
+	update := func(rows []parsedRow, engine string, f float64, clock *parseClock) {
 		q := parseQuality(rows, est)
 		if q > best.quality || (q == best.quality && len(rows) > len(best.rows)) {
-			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: region.found, quality: q, truncated: sweepClock.runTruncated()}
+			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: region.found, quality: q, truncated: clock.expiredNow()}
 		}
 	}
 	for _, df := range []float64{0, -0.03, 0.03} {
@@ -738,12 +738,12 @@ func parseScaledAround(img image.Image, est float64, firstRowY int, cleanGrid []
 		}
 		sf := font.scaledFont(f, gpqScaledTolNearest)
 		binRows := parseTableRows(cleanGrid, regionBin, sf, sweepClock)
-		update(binRows, "scaled-binary", f)
+		update(binRows, "scaled-binary", f, sweepClock)
 		// The smooth NCC pass costs seconds; skip it only when the pitch
 		// model proves the lossless nearest match already recovered
 		// essentially every row (roster-independent gate).
 		if !passComplete(binRows, n, est) && !nccClock.exceeded() {
-			update(parseTableRowsNCC(nccP, regionNCC, font.grayScaledFont(f), nccClock), "ncc", f)
+			update(parseTableRowsNCC(nccP, regionNCC, font.grayScaledFont(f), nccClock), "ncc", f, nccClock)
 		}
 		// The phase variants absorb small scale-estimate error, so the pitch
 		// estimate alone almost always suffices; widen the search only when
@@ -766,10 +766,10 @@ func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, sweepClo
 	clearLongVerticalRuns(strictClean, scalePx(gpqNCCMaxRun1x, 3.0))
 	clearLongHorizontalRuns(strictClean, scalePx(gpqNCCMaxRunH1x, 3.0))
 	best := scaledOutcome{engine: "ladder-binary", scale: 1}
-	update := func(rows []parsedRow, engine string, f float64, header bool) {
+	update := func(rows []parsedRow, engine string, f float64, header bool, clock *parseClock) {
 		q := parseQuality(rows, f)
 		if q > best.quality || (q == best.quality && len(rows) > len(best.rows)) {
-			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: header, quality: q, truncated: sweepClock.runTruncated()}
+			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: header, quality: q, truncated: clock.expiredNow()}
 		}
 	}
 	for _, f := range []float64{1.25, 1.5, 1.75, 2.0, 2.5, 3.0} {
@@ -781,7 +781,7 @@ func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, sweepClo
 		sf := font.scaledFont(f, gpqScaledTolNearest)
 		region := locateTable(strictClean, strictClean, sf, -1, sweepClock)
 		binRows := parseTableRows(strictClean, region, sf, sweepClock)
-		update(binRows, "ladder-binary", f, region.found)
+		update(binRows, "ladder-binary", f, region.found, sweepClock)
 		if passComplete(binRows, expectedRowCount(strictClean, region, f), f) {
 			return best
 		}
@@ -789,7 +789,7 @@ func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, sweepClo
 		gf := font.grayScaledFont(f)
 		nccRegion := locateTableNCC(nccP, gf, -1, nccClock)
 		nccRows := parseTableRowsNCC(nccP, nccRegion, gf, nccClock)
-		update(nccRows, "ladder-ncc", f, nccRegion.found)
+		update(nccRows, "ladder-ncc", f, nccRegion.found, nccClock)
 		if passComplete(nccRows, expectedRowCount(nccP.loose, nccRegion, f), f) {
 			return best
 		}
@@ -862,7 +862,7 @@ func ParseParticipation(imgData []byte, memberNames []string, font *GPQFont) (*P
 		scale:     1,
 		header:    strictRegion.found,
 		quality:   parseQuality(strictRows, 1),
-		truncated: strictClock.runTruncated(),
+		truncated: strictClock.expiredNow(),
 	}
 
 	est0, _ := estimateScaleAndFirstRow(grid)

@@ -39,12 +39,17 @@ func (r *parseRun) until(t time.Time) *parseClock {
 type parseClock struct {
 	deadline time.Time
 	run      *parseRun
+	// expired records whether THIS clock has ever hit its deadline. Candidate
+	// parses snapshot the clock that governed their decode, so an expiry in
+	// one pass (e.g. the strict-1x junk pass on a scaled screenshot) cannot
+	// mark a complete candidate from a different pass as truncated.
+	expired atomic.Bool
 }
 
-// runTruncated reports whether the owning run has recorded any deadline
-// expiry so far (used to snapshot per-candidate truncation).
-func (c *parseClock) runTruncated() bool {
-	return c != nil && c.run != nil && c.run.truncated.Load()
+// expiredNow reports whether this clock has recorded an expiry (used to
+// snapshot per-candidate truncation from the governing clock).
+func (c *parseClock) expiredNow() bool {
+	return c != nil && c.expired.Load()
 }
 
 // exceeded reports whether the deadline has passed, recording the expiry on
@@ -54,6 +59,7 @@ func (c *parseClock) exceeded() bool {
 		return false
 	}
 	if time.Now().After(c.deadline) {
+		c.expired.Store(true)
 		if c.run != nil {
 			c.run.truncated.Store(true)
 		}

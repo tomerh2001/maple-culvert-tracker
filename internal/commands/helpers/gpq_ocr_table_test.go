@@ -323,3 +323,25 @@ func TestParticipationScaledWindows(t *testing.T) {
 		}
 	}
 }
+
+// TestClockExpiryIsPerClock pins the truncation-attribution semantics: one
+// pass expiring its own budget (the strict-1x junk pass on a slow machine)
+// must not mark candidates governed by a still-healthy clock as truncated.
+func TestClockExpiryIsPerClock(t *testing.T) {
+	run := &parseRun{}
+	expired := run.until(time.Now().Add(-time.Second))
+	healthy := run.until(time.Now().Add(time.Hour))
+
+	if !expired.exceeded() {
+		t.Fatal("past-deadline clock should report exceeded")
+	}
+	if !expired.expiredNow() {
+		t.Error("expired clock must snapshot as expired")
+	}
+	if healthy.expiredNow() {
+		t.Error("healthy clock must NOT inherit another clock's expiry")
+	}
+	if !run.truncated.Load() {
+		t.Error("run-level flag still records any expiry (nothing-parsed fallback)")
+	}
+}
