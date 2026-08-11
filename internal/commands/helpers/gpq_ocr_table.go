@@ -417,11 +417,12 @@ func parseTableRows(grid [][]bool, region tableRegion, font *GPQFont, memberName
 				nameZoneL[y] = rowsL[y][:limit]
 				nameZoneT[y] = rowsT[y][:limit]
 			}
-			name := cleanDecodedName(matchRowDual(nameZoneL, nameZoneT, font))
+			name, ellipsis := cleanDecodedName(matchRowDual(nameZoneL, nameZoneT, font))
 			if name == "" || digitFn(name) != "" {
 				return // row without a name column
 			}
-			results[bandIdx] = rowResult{ok: true, name: reconcileName(name, memberNames), score: score}
+			ellipsis = ellipsis || inkNearRightEdge(nameZoneL, scalePx(nameEdgeEvidencePx, s))
+			results[bandIdx] = rowResult{ok: true, name: reconcileName(name, ellipsis, memberNames), score: score}
 		}(bandIdx, band)
 	}
 	wg.Wait()

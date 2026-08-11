@@ -912,11 +912,14 @@ func parseTableRowsNCC(p *nccPlane, region tableRegion, f *grayFont, memberNames
 			if nx1 > nameLimitAbs {
 				nx1 = nameLimitAbs
 			}
-			name := cleanDecodedName(nccDecodeSpan(p, f, sp0[0], nx1, y0, y1, loosePre, ins, false))
+			name, ellipsis := cleanDecodedName(nccDecodeSpan(p, f, sp0[0], nx1, y0, y1, loosePre, ins, false))
 			if name == "" || digitsScaled(name) != "" {
 				return
 			}
-			results[bandIdx] = rowResult{ok: true, name: reconcileName(name, memberNames), score: score}
+			// The name span running into the column limit is truncation
+			// evidence even when the ellipsis dots failed to decode.
+			ellipsis = ellipsis || sp0[1] >= nameLimitAbs-scalePx(nameEdgeEvidencePx, s)
+			results[bandIdx] = rowResult{ok: true, name: reconcileName(name, ellipsis, memberNames), score: score}
 		}(bandIdx, band)
 	}
 	wg.Wait()

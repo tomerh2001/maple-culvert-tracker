@@ -15,22 +15,13 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
 func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-
-	content := new(string)
-	editContent := func(msg string) {
-		*content = msg
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: content})
-	}
+	r := deferReply(s, i, false)
 
 	messageLink := ""
 	for _, v := range i.ApplicationCommandData().Options {
@@ -40,23 +31,23 @@ func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	channelID, messageID, ok := parseMessageLink(messageLink)
 	if !ok {
-		editContent("That doesn't look like a message link. Right click a message -> Copy Message Link and paste it here.\nTip: you can also just right click the message -> Apps -> **Parse Images**.")
+		r.Edit("That doesn't look like a message link. Right click a message -> Copy Message Link and paste it here.\nTip: you can also just right click the message -> Apps -> **Parse Images**.")
 		return
 	}
 
 	msg, err := s.ChannelMessage(channelID, messageID)
 	if err != nil {
 		log.Println("parseImages: failed to fetch message", messageID, "in channel", channelID, err)
-		editContent("Failed to fetch that message. Make sure the link is from this server and I can see the channel.")
+		r.Edit("Failed to fetch that message. Make sure the link is from this server and I can see the channel.")
 		return
 	}
 	imageURLs := collectImageURLs(msg)
 	if len(imageURLs) == 0 {
-		editContent("No image attachments found on the linked message.")
+		r.Edit("No image attachments found on the linked message.")
 		return
 	}
 
-	runParseImages(s, i, imageURLs)
+	runParseImages(r, imageURLs)
 }
 
 // ocrImagesToScores downloads and OCRs GPQ score images, returning the merged
@@ -131,59 +122,38 @@ func ocrImagesToScores(imageURLs []string) (merged []helpers.ScoreEntry, unmatch
 }
 
 // runParseImages OCRs the given images and edits the deferred interaction
-// response with the resulting JSON (or the list of unmatched names).
-func runParseImages(s *discordgo.Session, i *discordgo.InteractionCreate, imageURLs []string) {
-	content := new(string)
-	editContent := func(msg string) {
-		*content = msg
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: content})
-	}
-
+// response with the FULL annotated row set (every parsed row marked "tracked"
+// or "NEW" - never an unmatched-only view) plus the gpq_scores.json file.
+func runParseImages(r *reply, imageURLs []string) {
 	merged, unmatched, err := ocrImagesToScores(imageURLs)
 	if err != nil {
-		editContent(err.Error())
-		return
-	}
-
-	// Fail when any parsed name is not an active character.
-	if len(unmatched) > 0 {
-		*content = "Some parsed character names did not match any active character. Fix the images or track these characters first."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: content,
-			Files: []*discordgo.File{{
-				Name:        "unmatched.txt",
-				ContentType: "text/plain",
-				Reader:      strings.NewReader(formatUnmatchedScoresTable(unmatched)),
-			}},
-		})
+		r.Edit(err.Error())
 		return
 	}
 
 	out, err := marshalOrderedScores(merged)
 	if err != nil {
 		log.Println("parseImages: failed to marshal result:", err)
-		editContent("Internal error building the JSON result.")
+		r.Edit("Internal error building the JSON result.")
 		return
 	}
 
+	msg := fmt.Sprintf("Parsed %d row(s) from %d image(s): %d tracked, %d NEW.",
+		len(merged), len(imageURLs), len(merged)-len(unmatched), len(unmatched))
 	// Non-fatal validation: scores should be in descending order. If not, warn
 	// but still attach the output so the user can inspect/correct it.
-	msg := "Parsed scores from " + strconv.Itoa(len(imageURLs)) + " image(s)."
 	if idx := firstDescendingViolation(merged); idx >= 0 {
 		msg += "\n:warning: Scores are not in descending order (`" +
 			merged[idx-1].Name + "`: " + strconv.Itoa(merged[idx-1].Score) + " -> `" +
 			merged[idx].Name + "`: " + strconv.Itoa(merged[idx].Score) +
 			"). The output may be incorrect; please verify."
 	}
-	*content = msg
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: content,
-		Files: []*discordgo.File{{
+	r.EditWithTable(msg, formatAnnotatedScoresTable(merged, trackedSetOf(merged, unmatched)), "parsed_scores.txt",
+		&discordgo.File{
 			Name:        "gpq_scores.json",
 			ContentType: "application/json",
 			Reader:      strings.NewReader(string(out)),
-		}},
-	})
+		})
 }
 
 func collectUnmatchedScores(entries []helpers.ScoreEntry, activeSet map[string]bool) []helpers.ScoreEntry {
@@ -194,15 +164,6 @@ func collectUnmatchedScores(entries []helpers.ScoreEntry, activeSet map[string]b
 		}
 	}
 	return unmatched
-}
-
-func formatUnmatchedScoresTable(entries []helpers.ScoreEntry) string {
-	t := table.NewWriter()
-	t.AppendHeader(table.Row{"Missing Active Character", "Score"})
-	for _, entry := range entries {
-		t.AppendRow(table.Row{entry.Name, entry.Score})
-	}
-	return t.Render()
 }
 
 // firstDescendingViolation returns the index of the first entry whose score is

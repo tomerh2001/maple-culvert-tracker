@@ -172,6 +172,12 @@ var Commands = []*discordgo.ApplicationCommand{
 				Name:        "overwrite-existing",
 				Description: "Overwrite scores that already exist for that week",
 			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionBoolean,
+				Name:        "zero-missing",
+				Description: "Insert a 0 for tracked characters absent from the input (default off)",
+			},
 		},
 	},
 	{

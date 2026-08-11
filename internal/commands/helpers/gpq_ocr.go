@@ -64,7 +64,16 @@ const (
 
 // nameMatchThreshold: below this confidence a decoded name is treated as a
 // literal (new/unknown member) rather than reconciled to a known member.
-const nameMatchThreshold = 0.7
+const nameMatchThreshold = 0.85
+
+// nameMatchMargin: the best member match must beat the runner-up by at least
+// this much, or the decode stays literal (ambiguous between two members).
+const nameMatchMargin = 0.10
+
+// nameEdgeEvidencePx (at 1x): ink within this many pixels of the name
+// column's right boundary counts as truncation evidence - the game truncates
+// long names exactly there, and the ellipsis dots often fail to decode.
+const nameEdgeEvidencePx = 4
 
 type gpqGlyph struct {
 	r    rune
@@ -436,12 +445,13 @@ func ParseSmallImage(imgData []byte, memberNames []string, font *GPQFont) ([]Sco
 	namesBin := binarizeCrop(img, 0, 0, 68)
 	scoresBin := binarizeCrop(img, 305, 0, 415)
 
-	decodedNames := decodeColumn(namesBin, font)
+	decodedNames, nameEdges := decodeColumnWithEdges(namesBin, font, nameEdgeEvidencePx)
 	decodedScores := decodeColumn(scoresBin, font)
 
 	names := make([]string, len(decodedNames))
 	for i, d := range decodedNames {
-		names[i] = reconcileName(cleanDecodedName(d), memberNames)
+		name, ellipsis := cleanDecodedName(d)
+		names[i] = reconcileName(name, ellipsis || nameEdges[i], memberNames)
 	}
 	scores := make([]string, len(decodedScores))
 	for i, d := range decodedScores {
@@ -557,11 +567,40 @@ func detectRowsGap(col [][]bool, mergeGap int) [][2]int {
 }
 
 func decodeColumn(col [][]bool, font *GPQFont) []string {
-	res := []string{}
-	for _, band := range detectRows(col) {
-		res = append(res, matchRow(col[band[0]:band[1]], font))
-	}
+	res, _ := decodeColumnWithEdges(col, font, 0)
 	return res
+}
+
+// decodeColumnWithEdges decodes each text row of the column and also reports
+// whether the row's ink reaches within edgePx of the crop's right boundary.
+// The game truncates names at that boundary, so edge contact is truncation
+// evidence even when the ellipsis dots fail to decode.
+func decodeColumnWithEdges(col [][]bool, font *GPQFont, edgePx int) ([]string, []bool) {
+	res := []string{}
+	edges := []bool{}
+	for _, band := range detectRows(col) {
+		rows := col[band[0]:band[1]]
+		res = append(res, matchRow(rows, font))
+		edges = append(edges, inkNearRightEdge(rows, edgePx))
+	}
+	return res, edges
+}
+
+// inkNearRightEdge reports whether any ink sits within edgePx of the right
+// boundary of the given rows.
+func inkNearRightEdge(rows [][]bool, edgePx int) bool {
+	for _, r := range rows {
+		lo := len(r) - edgePx
+		if lo < 0 {
+			lo = 0
+		}
+		for x := lo; x < len(r); x++ {
+			if r[x] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // matchRow decodes the first "word" of a text row band (true = ink).
@@ -799,9 +838,12 @@ func glyphKeyLess(dn1 float64, w1 int, ch1 rune, dn2 float64, w2 int, ch2 rune) 
 
 // cleanDecodedName strips punctuation noise from a decoded name: commas
 // (matched off the dots of a truncation ellipsis - character names contain
-// none) and the trailing ellipsis dots themselves.
-func cleanDecodedName(s string) string {
-	return strings.TrimRight(strings.ReplaceAll(s, ",", ""), ".")
+// none) and the trailing ellipsis dots themselves. ellipsis reports whether
+// any such truncation evidence was present; reconcileName needs it to tell an
+// in-game-truncated name apart from a fully rendered one.
+func cleanDecodedName(s string) (cleaned string, ellipsis bool) {
+	cleaned = strings.TrimRight(strings.ReplaceAll(s, ",", ""), ".")
+	return cleaned, cleaned != s
 }
 
 func keepDigits(s string) string {
@@ -859,7 +901,9 @@ func normName(s string) string {
 }
 
 // nameLikeliness returns confidence in [0,1] that decoded name a refers to b.
-// Both inputs are already normalised.
+// Both inputs are already normalised. This is the deliberately lax scorer
+// used for table-header word recognition ("Name"/"Culvert"); roster
+// reconciliation goes through the stricter memberMatchConfidence instead.
 func nameLikeliness(a, b string) float64 {
 	if a == b {
 		return 1.0
@@ -884,24 +928,239 @@ func nameLikeliness(a, b string) float64 {
 	return prefixScore
 }
 
-func reconcileName(dec string, members []string) string {
+// memberMatchConfidence returns confidence in [0,1] that decoded name a is
+// roster member b. Both inputs are already normalised. ellipsis reports
+// whether the decode carried truncation evidence (the trailing "..." the game
+// renders on long names - whose dots may decode as commas - or ink running
+// into the name column's edge). Only with that evidence may a strict-prefix
+// decode snap to a longer member: a full render that merely prefixes a longer
+// roster name (e.g. "StellaMari" against "StellaMaris") is a different name,
+// not a truncation.
+func memberMatchConfidence(a, b string, ellipsis bool) float64 {
+	if a == b {
+		return 1.0
+	}
+	ar := []rune(a)
+	br := []rune(b)
+	if len(ar) == 0 || len(br) == 0 {
+		return 0
+	}
+	conf := alignConfidence(ar, br, ellipsis)
+	// Damaged scales sometimes cost the decode the member's leading glyph
+	// ("aItex" for "Xaltrex"): retry against the beheaded member at a small
+	// penalty, but only when the decode is short enough to have lost a rune.
+	if len(br) >= 3 && len(ar) <= len(br)-1 {
+		if c := alignConfidence(ar, br[1:], ellipsis) * 0.95; c > conf {
+			conf = c
+		}
+	}
+	if conf > 0.99 {
+		// Only a == b may return 1.0: reconcileName exempts exact decodes
+		// from the runner-up margin, fuzzy matches must still face it.
+		conf = 0.99
+	}
+	return conf
+}
+
+// alignConfidence scores one alignment of decode ar against member br.
+func alignConfidence(ar, br []rune, ellipsis bool) float64 {
+	if string(ar) == string(br) {
+		return 0.99
+	}
+	if len(br) > len(ar) && string(br[:len(ar)]) == string(ar) {
+		// br strictly extends ar: only a display truncation justifies it.
+		if ellipsis && len(ar) >= 3 {
+			return 0.97
+		}
+		return 0
+	}
+	lcp := 0
+	for lcp < len(ar) && lcp < len(br) && ar[lcp] == br[lcp] {
+		lcp++
+	}
+	prefixScore := 0.0
+	if lcp >= 4 {
+		prefixScore = float64(lcp) / float64(len(ar))
+	}
+	conf := sequenceRatio(ar, br)
+	if prefixScore > conf {
+		conf = prefixScore
+	}
+	if ellipsis {
+		// The display truncated the name at the column edge (and the decode
+		// may have misread the boundary glyph): score against length-matched
+		// prefixes too, so the member's hidden tail does not count against
+		// the match. Only sensible when the member is not shorter than the
+		// visible decode (give or take a boundary misread).
+		if len(br) >= len(ar)-2 {
+			n := len(ar)
+			if len(br) < n {
+				n = len(br)
+			}
+			if tr := sequenceRatio(ar[:n], br[:n]); tr > conf {
+				conf = tr
+			}
+		}
+		// Everything decoded except the last glyph or two (garbage from the
+		// glyph the edge cut in half) is the member's prefix: a strong
+		// truncation match, e.g. "CurseOfrc" for "CurseOfYoshi".
+		if lcp >= 5 && lcp >= len(ar)-2 && conf < 0.9 {
+			conf = 0.9
+		}
+	} else {
+		// A decode without truncation evidence is a full name render: only
+		// near-identical members qualify (bounded edit distance and length).
+		d := len(ar) - len(br)
+		if d < 0 {
+			d = -d
+		}
+		if d > 2 || levenshtein(ar, br) > 2 {
+			return 0
+		}
+	}
+	if s := weightedEditSimilarity(ar, br); s > conf {
+		conf = s
+	}
+	// Confusion-folded ratio: catches decodes whose damage is thin-stroke
+	// confusions plus a small indel ("XaIìex" for "Xaltrex").
+	if fr := sequenceRatio(foldThinRunes(ar), foldThinRunes(br)); fr > conf {
+		conf = fr
+	}
+	if ar[0] != br[0] && !confusableRunes(ar[0], br[0]) {
+		// A wrong first glyph is a strong "different name" signal: it demotes
+		// e.g. "Xenpapi" vs "Senpapi" (ratio 0.857) below the threshold.
+		conf *= 0.9
+	}
+	return conf
+}
+
+// confusableRunes reports whether two normalised runes render as
+// near-identical thin strokes in this bitmap font: bilinear scaling erodes
+// t's crossbar into an i/1, and l plus dotted variants already fold to i in
+// normName.
+func confusableRunes(a, b rune) bool {
+	return isThinRune(a) && isThinRune(b)
+}
+
+func isThinRune(r rune) bool { return r == 'i' || r == '1' || r == 't' }
+
+// foldThinRunes maps every thin-stroke rune to 'i' so confusions between
+// them cost nothing in a sequence ratio.
+func foldThinRunes(rs []rune) []rune {
+	out := make([]rune, len(rs))
+	for i, r := range rs {
+		if isThinRune(r) {
+			out[i] = 'i'
+		} else {
+			out[i] = r
+		}
+	}
+	return out
+}
+
+// weightedEditSimilarity scores ar against br with substitutions between
+// confusable glyphs nearly free - damaged decodes read 't' as 'i'/'1'
+// constantly ("koIsIare" for "kotstare") - and everything else costing 1.
+func weightedEditSimilarity(ar, br []rune) float64 {
+	n := len(br)
+	prev := make([]float64, n+1)
+	cur := make([]float64, n+1)
+	for j := range prev {
+		prev[j] = float64(j)
+	}
+	for i := 1; i <= len(ar); i++ {
+		cur[0] = float64(i)
+		for j := 1; j <= n; j++ {
+			sub := 1.0
+			if ar[i-1] == br[j-1] {
+				sub = 0
+			} else if confusableRunes(ar[i-1], br[j-1]) {
+				sub = 0.25
+			}
+			m := prev[j] + 1
+			if cur[j-1]+1 < m {
+				m = cur[j-1] + 1
+			}
+			if prev[j-1]+sub < m {
+				m = prev[j-1] + sub
+			}
+			cur[j] = m
+		}
+		prev, cur = cur, prev
+	}
+	maxLen := len(ar)
+	if n > maxLen {
+		maxLen = n
+	}
+	sim := 1 - prev[n]/float64(maxLen)
+	if sim < 0 {
+		sim = 0
+	}
+	return sim
+}
+
+// reconcileName maps a decoded name to a roster member, or returns the decode
+// unchanged when no member matches confidently enough. ellipsis is the
+// truncation evidence reported by cleanDecodedName. Besides clearing
+// nameMatchThreshold, the best match must beat the runner-up by
+// nameMatchMargin so a decode resembling several members stays literal
+// instead of guessing.
+func reconcileName(dec string, ellipsis bool, members []string) string {
 	if len([]rune(dec)) < 2 {
 		return dec
 	}
 	df := normName(dec)
 	bestMember := ""
-	bestConf := 0.0
+	best, second := 0.0, 0.0
 	for _, m := range members {
-		conf := nameLikeliness(df, normName(m))
-		if conf > bestConf {
-			bestConf = conf
+		conf := memberMatchConfidence(df, normName(m), ellipsis)
+		if conf > best {
+			second = best
+			best = conf
 			bestMember = m
+		} else if conf > second {
+			second = conf
 		}
 	}
-	if bestConf >= nameMatchThreshold {
+	if best == 1.0 {
+		return bestMember // exact decode of a roster name
+	}
+	if best >= nameMatchThreshold && best-second >= nameMatchMargin {
 		return bestMember
 	}
 	return dec
+}
+
+// levenshtein returns the edit distance between a and b (names are short, so
+// the plain two-row DP is plenty).
+func levenshtein(a, b []rune) int {
+	if len(a) < len(b) {
+		a, b = b, a
+	}
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			m := prev[j] + 1
+			if cur[j-1]+1 < m {
+				m = cur[j-1] + 1
+			}
+			if prev[j-1]+cost < m {
+				m = prev[j-1] + cost
+			}
+			cur[j] = m
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(b)]
 }
 
 // sequenceRatio replicates Python difflib.SequenceMatcher.ratio()

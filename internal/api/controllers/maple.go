@@ -1,8 +1,6 @@
 package controllers
 
 import (
-	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -17,6 +15,9 @@ import (
 
 type MapleController struct{}
 
+// POSTCulvert upserts culvert scores for a week in one transaction. The
+// body's isNew flag is ignored: inserts and updates are the same upsert
+// (ON CONFLICT ... DO UPDATE), and an empty payload is a harmless no-op.
 func (MapleController) POSTCulvert(c *gin.Context) {
 	body := data.POSTCulvertBody{}
 	if err := c.BindJSON(&body); err != nil {
@@ -35,41 +36,15 @@ func (MapleController) POSTCulvert(c *gin.Context) {
 		}
 	}
 	thisWeek = cmdhelpers.GetCulvertResetDate(thisWeek)
-	thisWeekStr := thisWeek.Format(time.DateOnly)
-	if body.IsNew {
-		query := ""
-		args := []any{}
-		d := 1
-		for _, v := range body.Payload {
-			query += fmt.Sprintf("($%d,'%s',$%d),", d, thisWeekStr, d+1)
-			d += 2
-			args = append(args, v.CharacterID, v.Score)
-		}
-		query = "INSERT INTO character_culvert_scores (character_id, culvert_date, score) VALUES " + query[:len(query)-1]
-		_, err = db.DB.Exec(query, args...)
-	} else { //typically this should be a patch request
-		tx, errtx := db.DB.BeginTx(context.Background(), nil)
-		if errtx != nil {
-			log.Println("DB ERROR tx POSTCulvert", err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "DB failed.",
-			})
-			return
-		}
-		for _, v := range body.Payload {
-			_, err = tx.Exec("UPDATE character_culvert_scores SET score = $1 WHERE character_id = $2 AND culvert_date = $3", v.Score, v.CharacterID, thisWeekStr)
-			if err != nil {
-				log.Println("DB ERROR POSTCulvert", err)
-				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-					"error": "DB failed.",
-				})
-				tx.Rollback()
-				return
-			}
-		}
-		err = tx.Commit()
+
+	changes := make([]cmdhelpers.ScoreChange, 0, len(body.Payload))
+	changedIDs := make([]int64, 0, len(body.Payload))
+	for _, v := range body.Payload {
+		changes = append(changes, cmdhelpers.ScoreChange{CharacterID: v.CharacterID, Score: v.Score})
+		changedIDs = append(changedIDs, v.CharacterID)
 	}
-	if err != nil {
+
+	if err := cmdhelpers.UpsertCulvertScores(db.DB, thisWeek, changes); err != nil {
 		log.Println("DB ERROR POSTCulvert", err)
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": "DB failed.",
@@ -77,11 +52,9 @@ func (MapleController) POSTCulvert(c *gin.Context) {
 		return
 	}
 
-	changedIDs := make([]int64, 0, len(body.Payload))
-	for _, v := range body.Payload {
-		changedIDs = append(changedIDs, v.CharacterID)
+	if len(changedIDs) > 0 {
+		go helpers.AnnounceSubmission(DiscordSession, db.DB, apiredis.RedisDB, thisWeek, changedIDs)
 	}
-	go helpers.AnnounceSubmission(DiscordSession, db.DB, apiredis.RedisDB, thisWeek, changedIDs)
 
 	c.AbortWithStatusJSON(http.StatusOK, gin.H{})
 }

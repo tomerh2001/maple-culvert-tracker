@@ -25,21 +25,28 @@ func TestCollectUnmatchedScoresPreservesParsedOrderAndScores(t *testing.T) {
 	}
 }
 
-func TestFormatUnmatchedScoresTableIncludesNamesAndScoresInOrder(t *testing.T) {
+func TestFormatAnnotatedScoresTableShowsAllRowsWithStatusInOrder(t *testing.T) {
 	entries := []helpers.ScoreEntry{
 		{Name: "MissingFirst", Score: 123456},
+		{Name: "ActiveCharacter", Score: 100000},
 		{Name: "MissingSecond", Score: 98765},
 	}
+	tracked := map[string]bool{"ActiveCharacter": true}
 
-	got := formatUnmatchedScoresTable(entries)
+	got := formatAnnotatedScoresTable(entries, tracked)
 
-	for _, expected := range []string{"MISSING ACTIVE CHARACTER", "SCORE", "MissingFirst", "123456", "MissingSecond", "98765"} {
+	for _, expected := range []string{"CHARACTER", "SCORE", "STATUS", "MissingFirst", "123456", "ActiveCharacter", "100000", "tracked", "NEW", "MissingSecond", "98765"} {
 		if !strings.Contains(got, expected) {
 			t.Errorf("table does not contain %q:\n%s", expected, got)
 		}
 	}
-	if strings.Index(got, "MissingFirst") > strings.Index(got, "MissingSecond") {
+	if strings.Index(got, "MissingFirst") > strings.Index(got, "ActiveCharacter") ||
+		strings.Index(got, "ActiveCharacter") > strings.Index(got, "MissingSecond") {
 		t.Errorf("table changed parsed order:\n%s", got)
+	}
+	// The full row set is rendered - the tracked row must not be filtered out.
+	if !strings.Contains(got, "ActiveCharacter") {
+		t.Errorf("tracked row missing from annotated table:\n%s", got)
 	}
 }
 

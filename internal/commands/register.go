@@ -11,16 +11,6 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
-func registerReply(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
-}
-
 // registerCharacter links a MapleStory character to a Discord account:
 // your own by default, or someone else's via user:@member (submitters only).
 func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
