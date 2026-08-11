@@ -13,8 +13,27 @@ import (
 	"sync"
 	"unicode"
 
+	"sync/atomic"
+	"time"
+
 	"golang.org/x/text/unicode/norm"
 )
+
+// parseDeadlineNs is a cooperative wall-clock deadline (unix nanos) the hot
+// match loops poll so a single expensive pass cannot run unbounded. 0 disables
+// it. Set by ParseParticipationImage; package-global because threading it
+// through every matcher signature would be invasive and the OCR is never run
+// concurrently for two different images in one goroutine.
+var parseDeadlineNs atomic.Int64
+
+func setParseDeadline(d time.Time) { parseDeadlineNs.Store(d.UnixNano()) }
+func clearParseDeadline()          { parseDeadlineNs.Store(0) }
+
+// deadlineExceeded reports whether the cooperative parse deadline has passed.
+func deadlineExceeded() bool {
+	ns := parseDeadlineNs.Load()
+	return ns != 0 && time.Now().UnixNano() > ns
+}
 
 // This file ports the lossless pixel-template-matching path of the Python
 // gpq-image-ocr project (gpq.py + font_match.py) for the "small" image style
@@ -687,6 +706,9 @@ func matchRowDual(loose, tight [][]bool, font *GPQFont) string {
 	skipped := 0
 	blankRun := 0
 	for x < w {
+		if deadlineExceeded() {
+			break
+		}
 		if !colInk(x) {
 			x++
 			blankRun++
@@ -1049,6 +1071,9 @@ func matchRowDP(loose, tight [][]bool, font *GPQFont) string {
 	for i := 0; i < n; i++ {
 		if dp[i] == inf {
 			continue
+		}
+		if i%16 == 0 && deadlineExceeded() {
+			return ""
 		}
 		if c := dp[i] + tightCol(s0+i); c < dp[i+1] {
 			dp[i+1] = c

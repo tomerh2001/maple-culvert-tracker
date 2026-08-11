@@ -664,7 +664,7 @@ func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, memberNa
 // templates upscaled to the detected scale.
 // gpqParseBudget caps the wall-clock spent on one image: when exceeded, the
 // best result found so far is returned instead of searching further scales.
-const gpqParseBudget = 15 * time.Second
+const gpqParseBudget = 12 * time.Second
 
 // gpqMaxPixels rejects absurdly large images before any work happens.
 const gpqMaxPixels = 24_000_000
@@ -677,6 +677,9 @@ func ParseParticipationImage(imgData []byte, memberNames []string, font *GPQFont
 	if b := img.Bounds(); b.Dx()*b.Dy() > gpqMaxPixels {
 		return nil, errImageTooLarge
 	}
+
+	setParseDeadline(time.Now().Add(gpqParseBudget))
+	defer clearParseDeadline()
 
 	grid := binarizeFull(img)
 	best, bestHeader := parseParticipationGrid(grid, font, memberNames)

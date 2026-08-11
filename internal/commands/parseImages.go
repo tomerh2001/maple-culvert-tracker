@@ -1,15 +1,18 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -96,7 +99,12 @@ func ocrImagesToScores(imageURLs []string) (merged []helpers.ScoreEntry, unmatch
 				results[idx] = imgResult{err: err}
 				return
 			}
+			if cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data)); cerr == nil {
+				log.Printf("parseImages: image %dx%d (%d KB) %s", cfg.Width, cfg.Height, len(data)/1024, url)
+			}
+			start := time.Now()
 			scores, err := helpers.ParseParticipationImage(data, memberNames, font)
+			log.Printf("parseImages: parsed %d rows in %s", len(scores), time.Since(start).Round(time.Millisecond))
 			results[idx] = imgResult{scores: scores, err: err}
 		}(idx, url)
 	}
@@ -248,8 +256,10 @@ func isImageAttachment(a *discordgo.MessageAttachment) bool {
 		strings.HasSuffix(fn, ".webp")
 }
 
+var downloadClient = &http.Client{Timeout: 20 * time.Second}
+
 func downloadBytes(url string) ([]byte, error) {
-	resp, err := http.Get(url)
+	resp, err := downloadClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -257,5 +267,5 @@ func downloadBytes(url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to download %s: status %d", url, resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 }
