@@ -34,7 +34,7 @@ func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	channelID, messageID, ok := parseMessageLink(messageLink)
 	if !ok {
-		r.Edit("That doesn't look like a message link. Right click a message -> Copy Message Link and paste it here.\nTip: you can also just right click the message -> Apps -> **Parse Images**.")
+		r.Edit("That doesn't look like a message link. Right click a message -> Copy Message Link and paste it here.")
 		return
 	}
 
@@ -124,7 +124,10 @@ func ocrImagesToScores(imageURLs []string) (*ocrOutcome, error) {
 	for idx, r := range results {
 		if r.err != nil {
 			log.Println("parseImages: failed to process image", imageURLs[idx], r.err)
-			return nil, errors.New("Failed to process one of the images. Please ensure they are valid `small` style GPQ score images.")
+			if errors.Is(r.err, helpers.ErrCulvertWindowNotFound) {
+				return nil, fmt.Errorf("Image %d: %s", idx+1, r.err.Error())
+			}
+			return nil, errors.New("Failed to process one of the images. Please post screenshots of the full Guild window (Member Participation Status page).")
 		}
 		out.truncated = out.truncated || r.res.Truncated
 		for _, d := range r.res.Defects {
@@ -184,10 +187,23 @@ func runParseImages(r *reply, imageURLs []string) {
 		len(oc.merged), len(imageURLs), len(oc.merged)-len(oc.unmatched), len(oc.unmatched))
 	if len(oc.unmatched) > 0 {
 		names := make([]string, 0, len(oc.unmatched))
+		truncated := make([]string, 0)
 		for _, e := range oc.unmatched {
+			if e.Ellipsis {
+				// The game cut this name short with an ellipsis: the decode
+				// is an incomplete prefix, never a name to track.
+				truncated = append(truncated, e.Name)
+				continue
+			}
 			names = append(names, e.Name)
 		}
-		msg += "\nTrack the NEW ones with: `/track-characters names:" + strings.Join(names, ",") + "` (submitting auto-tracks them by default)"
+		if len(names) > 0 {
+			msg += "\nTrack the NEW ones with: `/track-characters names:" + strings.Join(names, ",") + "` (submitting auto-tracks them by default)"
+		}
+		if len(truncated) > 0 {
+			msg += "\n:warning: Truncated in-game (name cut off with \"..\"): `" + strings.Join(capList(truncated, 10), "`, `") +
+				"` - these will NOT be auto-tracked; track their full names with `/track-characters` first."
+		}
 	}
 	msg += ocrWarnings(oc)
 	// Non-fatal validation: scores should be in descending order. If not, warn

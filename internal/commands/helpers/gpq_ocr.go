@@ -471,6 +471,10 @@ type ScoreEntry struct {
 	Matched    bool
 	Confidence float64
 	Row        int
+	// Ellipsis reports game-side name truncation evidence: the row's raw
+	// decode is an INCOMPLETE prefix of the real character name, so when it
+	// matches no tracked character it must never be auto-tracked as-is.
+	Ellipsis bool
 }
 
 // parsedRow is one raw parsed table row before any roster reconciliation:
@@ -504,7 +508,7 @@ func resolveRows(rows []parsedRow, members []string, defects *[]string) []ScoreE
 		if score <= 0 {
 			continue
 		}
-		entries = append(entries, ScoreEntry{Name: r.rawName, RawName: r.rawName, Score: score, Row: i})
+		entries = append(entries, ScoreEntry{Name: r.rawName, RawName: r.rawName, Score: score, Row: i, Ellipsis: r.ellipsis})
 		ellipsis = append(ellipsis, r.ellipsis)
 	}
 
@@ -763,9 +767,18 @@ func matchRowDual(loose, tight [][]bool, font *GPQFont, clock *parseClock) strin
 // the band's total tight ink. A matched glyph explains its advance span plus
 // one column each side (mirroring the NCC decoder's accounting).
 func matchRowDualCov(loose, tight [][]bool, font *GPQFont, clock *parseClock) (string, int, int) {
+	text, explained, total, _, _ := matchRowDualCovQ(loose, tight, font, clock)
+	return text, explained, total
+}
+
+// matchRowDualCovQ is matchRowDualCov additionally reporting match QUALITY:
+// the sum of accepted glyphs' normalized template distances and their count.
+// Genuinely crisp content matches at distances near zero; content that only
+// scrapes past the tolerance is resampled or blurred, whatever it claims.
+func matchRowDualCovQ(loose, tight [][]bool, font *GPQFont, clock *parseClock) (string, int, int, float64, int) {
 	h := len(loose)
 	if h == 0 {
-		return "", 0, 0
+		return "", 0, 0, 0, 0
 	}
 	w := len(loose[0])
 	loosePre := colPrefix(loose)
@@ -794,11 +807,13 @@ func matchRowDualCov(loose, tight [][]bool, font *GPQFont, clock *parseClock) (s
 	x := 0
 	skipped := 0
 	blankRun := 0
+	sumDn := 0.0
+	nGlyphs := 0
 	for x < w {
 		if clock.exceeded() {
 			// Fail closed: an expired deadline must never yield a partial
 			// word that could reconcile onto the wrong member.
-			return "", 0, totalInk
+			return "", 0, totalInk, 0, 0
 		}
 		if !colInk(x) {
 			x++
@@ -813,6 +828,8 @@ func matchRowDualCov(loose, tight [][]bool, font *GPQFont, clock *parseClock) (s
 		ch, wT, dn, ok := bestGlyphAt(loose, tight, loosePre, tightPre, x, font)
 		if ok && dn <= font.matchTol() {
 			out = append(out, ch)
+			sumDn += dn
+			nGlyphs++
 			cover(x-1, x+wT+1)
 			if font.gapAdvance {
 				// Scaled template widths can differ by a pixel from the
@@ -843,7 +860,7 @@ func matchRowDualCov(loose, tight [][]bool, font *GPQFont, clock *parseClock) (s
 			explained += tightPre[c+1] - tightPre[c]
 		}
 	}
-	return string(out), explained, totalInk
+	return string(out), explained, totalInk, sumDn, nGlyphs
 }
 
 // bestGlyphAt finds the best-matching template starting at column x. Ties on
@@ -1163,12 +1180,17 @@ func alignConfidence(ar, br []rune, ellipsis bool) float64 {
 	return conf
 }
 
-// confusableRunes reports whether two normalised runes render as
-// near-identical thin strokes in this bitmap font: bilinear scaling erodes
-// t's crossbar into an i/1, and l plus dotted variants already fold to i in
-// normName.
+// confusableRunes reports whether two normalised runes render
+// near-identically in this bitmap font under scaling blur: the thin strokes
+// (bilinear scaling erodes t's crossbar into an i/1; l and dotted variants
+// already fold to i in normName), and the crossbar pair f/t, whose merged
+// "ff"/"ft" forms measure within a hair of each other at fractional scales
+// (Suffer's second f correlates 0.77 as ff vs 0.80 as ft at 1.49x).
 func confusableRunes(a, b rune) bool {
-	return isThinRune(a) && isThinRune(b)
+	if isThinRune(a) && isThinRune(b) {
+		return true
+	}
+	return (a == 'f' && b == 't') || (a == 't' && b == 'f')
 }
 
 func isThinRune(r rune) bool { return r == 'i' || r == '1' || r == 't' }

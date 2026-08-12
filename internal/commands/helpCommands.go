@@ -49,7 +49,7 @@ Members self-serve with ` + "`/register`" + `; submitters can also link anyone w
 
 **4. Submit scores weekly**
 Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine), post it in Discord, then right click the message -> Apps -> **Submit Scores**. Done.
-- Preview without saving: right click -> Apps -> **Parse Images** (or ` + "`/parse-images message-link:...`" + `)
+- Preview without saving: ` + "`/parse-images message-link:...`" + ` (right click the message -> Copy Message Link)
 - Corrections: ` + "`/submit-scores`" + ` with ` + "`overwrite-existing:True`" + ` and/or ` + "`date:`" + ` for past weeks, or ` + "`/set-score`" + ` for a single fix
 - Optional: ` + "`/config setting:Allow self-reported scores value:true`" + ` lets members ` + "`/report-score`" + ` their own runs
 

@@ -2,8 +2,6 @@ package helpers
 
 import (
 	"image"
-	"math"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,21 +10,15 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// This file generalises the fixed-crop "small" parser to arbitrary
-// screenshots of the Guild "Member Participation Status" window: the table is
-// located instead of assumed. Each text row is segmented into words by column
-// gaps; a data row is recognised by its numeric columns (Level, Weekly
-// Mission, Culvert, Flag Race), making the culvert score the second-to-last
-// pure-digit word of the row. Works for the legacy pre-cropped table too,
-// where the name is simply the leftmost word.
+// This file holds the legacy 1x table parser (header-word location plus
+// numeric-column row recognition) and the ParseParticipation entry point.
 //
-// Scaled screenshots (Retina 2x, fractional Windows/display scaling) are
-// handled by scaled-template matching at the image's native resolution, so no
-// screenshot pixels are destroyed by resampling: crisply-scaled text is
-// matched with nearest-neighbour-upscaled binary templates under the strict
-// tolerance, and smoothly-scaled or re-encoded text with the normalized
-// cross-correlation matcher (gpq_ocr_ncc.go). Either way only the game's
-// bitmap font geometry is accepted.
+// Screenshots of the full Guild window are handled by the ANCHOR pipeline
+// (gpq_ocr_anchor.go / gpq_ocr_anchor_parse.go): the window title fixes
+// (scale, origin) deterministically and the fixed dialog geometry does the
+// rest. The legacy parser remains as the fallback for anchorless images -
+// the pre-cropped table format has no window title - and only ever runs at
+// native 1x with strict binary matching.
 
 type ocrWord struct {
 	text string
@@ -159,57 +151,6 @@ var (
 // fixtureRowPitch is the vertical distance between table text row band starts
 // at 1x (measured on the provided fixtures: 24px between consecutive rows).
 const fixtureRowPitch = 24.0
-
-// estimateScaleFromPitch derives the UI scale from the spacing between text
-// rows in the binarized image. Sidebar text and other window chrome inject
-// off-pitch spacings (and band merging shifts with scale), so instead of a
-// bare median the estimator votes: the candidate scale whose implied table
-// pitch explains the most row spacings wins, and the estimate is refined
-// from exactly the spacings that voted for it. Returns 0 when no plausible
-// pitch dominates.
-func estimateScaleFromPitch(grid [][]bool) float64 {
-	est, _ := estimateScaleAndFirstRow(grid)
-	return est
-}
-
-// estimateScaleAndFirstRow additionally returns the y of the first band
-// participating in the winning pitch (an upper bound on where the table
-// starts; -1 when unknown).
-func estimateScaleAndFirstRow(grid [][]bool) (float64, int) {
-	bands := detectRows(grid)
-	type delta struct{ d, y int }
-	deltas := []delta{}
-	for i := 1; i < len(bands); i++ {
-		d := bands[i][0] - bands[i-1][0]
-		if d >= 18 && d <= 90 {
-			deltas = append(deltas, delta{d, bands[i-1][0]})
-		}
-	}
-	if len(deltas) < 4 {
-		return 0, -1
-	}
-	bestVotes, bestSum, bestCnt, bestY := 0, 0, 0, -1
-	for c := 100; c <= 330; c += 5 {
-		pitch := float64(c) / 100 * fixtureRowPitch
-		votes, sum, firstY := 0, 0, -1
-		for _, d := range deltas {
-			if math.Abs(float64(d.d)-pitch) <= 2 {
-				votes++
-				sum += d.d
-				if firstY < 0 {
-					firstY = d.y
-				}
-			}
-		}
-		if votes > bestVotes {
-			bestVotes, bestSum, bestCnt, bestY = votes, sum, votes, firstY
-		}
-	}
-	if bestVotes < 3 {
-		return 0, -1
-	}
-	return float64(bestSum) / float64(bestCnt) / fixtureRowPitch, bestY
-}
 
 // gpqHeaderWordConf is the fuzzy-match confidence needed to recognise the
 // header's "Name"/"Culvert" words. Scaled decodes can drop a letter (e.g.
@@ -494,309 +435,6 @@ var (
 	gpqCulvertTol = 0.22
 )
 
-// gpqMinScaledEst: below this pitch-derived scale estimate the image is
-// treated as native 1x and the strict parse is authoritative.
-const gpqMinScaledEst = 1.05
-
-// ── Roster-free parse arbitration ───────────────────────────────────────────
-//
-// Competing parses (engines, candidate scales) are ranked by INTRINSIC
-// quality only - explained-ink mass damped by pitch conformity and score
-// monotonicity - never by how many rows reconcile against the roster. The
-// winning parse's rows (raw names, scores, order) are therefore identical
-// for any roster, including an empty one; reconciliation happens exactly
-// once afterwards, on the winner.
-
-// scaledOutcome is one candidate parse with its arbitration metadata.
-type scaledOutcome struct {
-	rows    []parsedRow
-	engine  string
-	scale   float64
-	header  bool
-	quality float64
-	// truncated records whether the run's clock had expired by the time THIS
-	// candidate finished parsing: a candidate produced before any expiry is
-	// complete evidence even when a later (losing) pass runs out of budget.
-	truncated bool
-}
-
-// parseQuality scores a candidate parse: quality =
-// (Σ v_i) * (0.5 + 0.5*P) * (0.75 + 0.25*M), where v_i is each row's
-// explained-ink fraction, P the pitch conformity and M the score
-// monotonicity. imgScale is the IMAGE's UI scale (row pitch model), not the
-// candidate template scale.
-func parseQuality(rows []parsedRow, imgScale float64) float64 {
-	if len(rows) == 0 {
-		return 0
-	}
-	sumV := 0.0
-	for _, r := range rows {
-		sumV += r.v
-	}
-	p := pitchConformity(rows, imgScale)
-	m := scoreMonotonicity(rows)
-	return sumV * (0.5 + 0.5*p) * (0.75 + 0.25*m)
-}
-
-// pitchConformity is the fraction of adjacent emitted rows whose band-start
-// spacing lies on the modal pitch progression (a 1-4 pitch multiple, within
-// +-3 scaled px). 1 when fewer than two rows.
-func pitchConformity(rows []parsedRow, imgScale float64) float64 {
-	if len(rows) < 2 {
-		return 1
-	}
-	pitch := fixtureRowPitch * imgScale
-	tol := 3 * imgScale
-	conforming := 0
-	for i := 1; i < len(rows); i++ {
-		d := float64(rows[i].bandY0 - rows[i-1].bandY0)
-		for k := 1.0; k <= 4; k++ {
-			if math.Abs(d-k*pitch) <= tol {
-				conforming++
-				break
-			}
-		}
-	}
-	return float64(conforming) / float64(len(rows)-1)
-}
-
-// scoreMonotonicity is the fraction of adjacent score pairs that are
-// non-increasing (the table is sorted by culvert score). 1 when fewer than
-// two rows.
-func scoreMonotonicity(rows []parsedRow) float64 {
-	if len(rows) < 2 {
-		return 1
-	}
-	nonIncreasing := 0
-	prev, _ := strconv.Atoi(rows[0].score)
-	for i := 1; i < len(rows); i++ {
-		cur, _ := strconv.Atoi(rows[i].score)
-		if cur <= prev {
-			nonIncreasing++
-		}
-		prev = cur
-	}
-	return float64(nonIncreasing) / float64(len(rows)-1)
-}
-
-// expectedRowCount estimates from the pitch model how many table rows a
-// complete parse of the region should emit: the length of the contiguous
-// pitch progression of row bands below the header cut (region columns only).
-// Returns 0 when fewer than 4 bands exist - N is then unknowable and every
-// engine must run.
-func expectedRowCount(plane [][]bool, region tableRegion, imgScale float64) int {
-	if len(plane) == 0 || region.headerY1 >= len(plane) {
-		return 0
-	}
-	x0, x1 := region.x0, region.x1
-	if x1 > len(plane[0]) {
-		x1 = len(plane[0])
-	}
-	if x0 < 0 || x0 >= x1 {
-		return 0
-	}
-	sub := make([][]bool, 0, len(plane)-region.headerY1)
-	for y := region.headerY1; y < len(plane); y++ {
-		sub = append(sub, plane[y][x0:x1])
-	}
-	bands := detectRowsGap(sub, scalePx(3, imgScale))
-	if len(bands) < 4 {
-		return 0
-	}
-	pitch := fixtureRowPitch * imgScale
-	tol := 3 * imgScale
-	n := 1
-	for i := 1; i < len(bands); i++ {
-		if math.Abs(float64(bands[i][0]-bands[i-1][0])-pitch) > tol {
-			break // first off-pitch band ends the table (TIP box, buttons)
-		}
-		n++
-	}
-	if n < 4 {
-		return 0
-	}
-	return n
-}
-
-// passComplete reports whether a parse is complete enough that running
-// further engines cannot beat it: it emitted (nearly) every expected row
-// with high explained-ink coverage on a conforming pitch progression. Always
-// false when N is unknowable - then every engine runs.
-func passComplete(rows []parsedRow, n int, imgScale float64) bool {
-	if n < 4 || len(rows) < n-1 {
-		return false
-	}
-	sumV := 0.0
-	for _, r := range rows {
-		sumV += r.v
-	}
-	return sumV/float64(len(rows)) >= 0.85 && pitchConformity(rows, imgScale) >= 0.9
-}
-
-// snapRegionToPlane re-anchors a table region located on one ink plane for
-// parsing on a different one: band boundaries shift between the strict
-// binary plane and the fatter halo-inclusive NCC plane, and a header cut
-// landing INSIDE a band of the target plane would slice its first row in
-// half. The cut is snapped to the nearest inter-band gap of the target
-// plane, and when the first band below the cut is not within one pitch of
-// the pitch estimate's first table row, the cut is re-anchored just above
-// that row instead.
-func snapRegionToPlane(region tableRegion, plane [][]bool, imgScale float64, firstRowY int) tableRegion {
-	if !region.found || len(plane) == 0 {
-		return region
-	}
-	x0, x1 := region.x0, region.x1
-	if x1 > len(plane[0]) {
-		x1 = len(plane[0])
-	}
-	if x0 < 0 || x0 >= x1 {
-		return region
-	}
-	sub := make([][]bool, len(plane))
-	for y := range plane {
-		sub[y] = plane[y][x0:x1]
-	}
-	bands := detectRowsGap(sub, scalePx(3, imgScale))
-	if len(bands) == 0 {
-		return region
-	}
-	h := region.headerY1
-	for _, b := range bands {
-		if h >= b[0] && h < b[1] {
-			// Inside a band: snap to the nearer edge of the surrounding gaps.
-			if h-b[0] <= b[1]-h {
-				h = b[0] - 1
-				if h < 0 {
-					h = 0
-				}
-			} else {
-				h = b[1]
-			}
-			break
-		}
-	}
-	if firstRowY >= 0 {
-		pitch := scalePx(int(fixtureRowPitch), imgScale)
-		first := -1
-		for _, b := range bands {
-			if b[0] >= h {
-				first = b[0]
-				break
-			}
-		}
-		if first < 0 || first-firstRowY > pitch || firstRowY-first > pitch {
-			h = firstRowY - scalePx(4, imgScale)
-			if h < 0 {
-				h = 0
-			}
-		}
-	}
-	region.headerY1 = h
-	return region
-}
-
-// parseScaledAround matches scaled glyph templates at the image's native
-// resolution, searching a small grid of scales around the pitch estimate and
-// both scaling modes: crisp nearest-neighbour (binary strict matching) and
-// smooth (NCC against the luminance plane, see gpq_ocr_ncc.go). The table is
-// located once (its position in image pixels does not depend on the candidate
-// template scale). cleanGrid is the chrome-cleaned binary grid the pitch
-// estimate was derived from. Engines are skipped ONLY via the deterministic
-// completeness gate (passComplete) - never by leftover wall-clock - so the
-// set of passes attempted is reproducible; an expired clock fails decodes
-// closed and flags the run truncated instead.
-func parseScaledAround(img image.Image, est float64, firstRowY int, cleanGrid [][]bool, font *GPQFont, sweepClock, nccClock *parseClock) scaledOutcome {
-	nccP := buildNCCPlane(img, est)
-
-	// Locate the header: crisp nearest-neighbour matching on the strict grid
-	// first (fast), NCC over the luminance plane otherwise (real client
-	// windows render the header in a different smooth font, which template
-	// matching cannot read - the NCC locator derives the columns from the
-	// data rows instead).
-	region := locateTable(cleanGrid, cleanGrid, font.scaledFont(est, gpqScaledTolNearest), firstRowY, sweepClock)
-	regionBin, regionNCC := region, region
-	if region.found {
-		regionNCC = snapRegionToPlane(region, nccP.loose, est, firstRowY)
-	} else {
-		region = locateTableNCC(nccP, font.grayScaledFont(est), firstRowY, nccClock)
-		regionNCC = region
-		regionBin = snapRegionToPlane(region, cleanGrid, est, firstRowY)
-	}
-
-	n := expectedRowCount(nccP.loose, regionNCC, est)
-	best := scaledOutcome{engine: "scaled-binary", scale: est, header: region.found}
-	update := func(rows []parsedRow, engine string, f float64, clock *parseClock) {
-		q := parseQuality(rows, est)
-		if q > best.quality || (q == best.quality && len(rows) > len(best.rows)) {
-			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: region.found, quality: q, truncated: clock.expiredNow()}
-		}
-	}
-	for _, df := range []float64{0, -0.03, 0.03} {
-		f := est + df
-		if f < 1.01 {
-			continue
-		}
-		sf := font.scaledFont(f, gpqScaledTolNearest)
-		binRows := parseTableRows(cleanGrid, regionBin, sf, sweepClock)
-		update(binRows, "scaled-binary", f, sweepClock)
-		// The smooth NCC pass costs seconds; skip it only when the pitch
-		// model proves the lossless nearest match already recovered
-		// essentially every row (roster-independent gate).
-		if !passComplete(binRows, n, est) && !nccClock.exceeded() {
-			update(parseTableRowsNCC(nccP, regionNCC, font.grayScaledFont(f), nccClock), "ncc", f, nccClock)
-		}
-		// The phase variants absorb small scale-estimate error, so the pitch
-		// estimate alone almost always suffices; widen the search only when
-		// it clearly under-delivers.
-		if df == 0 && passComplete(best.rows, n, est) {
-			break
-		}
-	}
-	return best
-}
-
-// parseScaledLadder is the fallback when the strict parse found nothing and
-// the image has too few rows to estimate a pitch: sweep a coarse scale
-// ladder with both scaling modes. With so few rows the expected row count is
-// usually unknowable, in which case every rung runs.
-func parseScaledLadder(img image.Image, strict [][]bool, font *GPQFont, sweepClock, nccClock *parseClock) scaledOutcome {
-	// Clean chrome runs sized for the largest ladder scale (larger runs are
-	// chrome at every attempted scale).
-	strictClean := cloneGrid(strict)
-	clearLongVerticalRuns(strictClean, scalePx(gpqNCCMaxRun1x, 3.0))
-	clearLongHorizontalRuns(strictClean, scalePx(gpqNCCMaxRunH1x, 3.0))
-	best := scaledOutcome{engine: "ladder-binary", scale: 1}
-	update := func(rows []parsedRow, engine string, f float64, header bool, clock *parseClock) {
-		q := parseQuality(rows, f)
-		if q > best.quality || (q == best.quality && len(rows) > len(best.rows)) {
-			best = scaledOutcome{rows: rows, engine: engine, scale: f, header: header, quality: q, truncated: clock.expiredNow()}
-		}
-	}
-	for _, f := range []float64{1.25, 1.5, 1.75, 2.0, 2.5, 3.0} {
-		if nccClock.exceeded() {
-			// Budget exhausted: the run is flagged truncated; stop instead of
-			// burning cycles on decodes that now all fail closed.
-			break
-		}
-		sf := font.scaledFont(f, gpqScaledTolNearest)
-		region := locateTable(strictClean, strictClean, sf, -1, sweepClock)
-		binRows := parseTableRows(strictClean, region, sf, sweepClock)
-		update(binRows, "ladder-binary", f, region.found, sweepClock)
-		if passComplete(binRows, expectedRowCount(strictClean, region, f), f) {
-			return best
-		}
-		nccP := buildNCCPlane(img, f)
-		gf := font.grayScaledFont(f)
-		nccRegion := locateTableNCC(nccP, gf, -1, nccClock)
-		nccRows := parseTableRowsNCC(nccP, nccRegion, gf, nccClock)
-		update(nccRows, "ladder-ncc", f, nccRegion.found, nccClock)
-		if passComplete(nccRows, expectedRowCount(nccP.loose, nccRegion, f), f) {
-			return best
-		}
-	}
-	return best
-}
-
 // ParseResult is the full outcome of parsing one participation screenshot.
 type ParseResult struct {
 	// Rows are the parsed table rows in band order: one entry per parsed
@@ -810,35 +448,39 @@ type ParseResult struct {
 	// Defects are non-fatal parse anomalies (skipped rows, reconciliation
 	// collisions) worth surfacing to the operator.
 	Defects []string
-	// Scale is the template scale of the winning parse, Engine its matching
-	// engine and HeaderFound whether a table header anchored the region.
+	// Scale is the screenshot's UI scale (anchored, or 1 for the legacy
+	// fallback), Engine the matching engine that produced the rows
+	// ("anchor-nearest", "anchor-smooth" or "legacy-1x"), AnchorFound
+	// whether the window-title anchor located the table and AnchorNCC the
+	// title patch's correlation score (0 without an anchor).
 	Scale       float64
 	Engine      string
-	HeaderFound bool
+	AnchorFound bool
+	AnchorNCC   float64
 }
 
-// Wall-clock budgets for one ParseParticipation call. Every pass gets a
-// fixed sub-deadline derived from the single entry time - never from
-// leftover time of earlier passes - so the set of passes attempted does not
-// depend on scheduling luck: the strict 1x pass is generously bounded, the
-// scaled-binary sweep must finish within its own window and the NCC engine
-// gets the remainder of the total.
+// Wall-clock budgets for one ParseParticipation call. The anchor removed the
+// scale search, so the whole parse fits a tight budget; the anchor sweep gets
+// its own fixed sub-deadline so a pathological image cannot starve the row
+// decodes.
 const (
-	gpqParseBudget  = 12 * time.Second
-	gpqStrictBudget = 4 * time.Second
-	gpqSweepBudget  = 4 * time.Second // sweep deadline = strict + sweep
+	gpqParseBudget  = 8 * time.Second
+	gpqAnchorBudget = 4 * time.Second
 )
 
 // gpqMaxPixels rejects absurdly large images before any work happens.
 const gpqMaxPixels = 24_000_000
 
 // ParseParticipation decodes a screenshot of the guild participation table -
-// either the full Guild window or a pre-cropped table body. Native 1x is
-// matched strictly; scaled screenshots (integer or fractional UI scales) are
-// matched with glyph templates upscaled to the detected scale. Engine
-// arbitration is roster-free: the winning parse's rows (raw names, scores,
-// order) are identical for any roster; names are reconciled against
-// memberNames once, on the winner.
+// either the full Guild window or a pre-cropped table body. The full window
+// is located via the "Member Participation Status" title anchor, which fixes
+// (scale, origin) deterministically; the anchored parse then runs both glyph
+// engines at that ONE scale. Anchorless images fall back to the legacy
+// strict 1x parse (the pre-cropped table format); when that also finds
+// nothing, the image is not a culvert window we can trust and an error says
+// so. Parsing is roster-free: the rows (raw names, scores, order) are
+// identical for any roster; names are reconciled against memberNames once,
+// after the parse.
 func ParseParticipation(imgData []byte, memberNames []string, font *GPQFont) (*ParseResult, error) {
 	img, _, err := image.Decode(strings.NewReader(string(imgData)))
 	if err != nil {
@@ -850,56 +492,42 @@ func ParseParticipation(imgData []byte, memberNames []string, font *GPQFont) (*P
 
 	start := time.Now()
 	run := &parseRun{}
-	strictClock := run.until(start.Add(gpqStrictBudget))
-	sweepClock := run.until(start.Add(gpqStrictBudget + gpqSweepBudget))
-	nccClock := run.until(start.Add(gpqParseBudget))
+	anchorClock := run.until(start.Add(gpqAnchorBudget))
+	decodeClock := run.until(start.Add(gpqParseBudget))
 
+	if hit, ok := findAnchor(img, anchorClock); ok {
+		rows, engine := parseAnchored(img, hit, font, decodeClock)
+		res := &ParseResult{
+			Scale:       hit.scale,
+			Engine:      engine,
+			AnchorFound: true,
+			AnchorNCC:   hit.ncc,
+		}
+		res.Rows = resolveRows(rows, memberNames, &res.Defects)
+		res.Truncated = decodeClock.expiredNow() || (len(rows) == 0 && run.truncated.Load())
+		return res, nil
+	}
+	if run.truncated.Load() {
+		// The anchor search itself ran out of budget: report an honest
+		// truncation instead of "not a culvert window".
+		return &ParseResult{Truncated: true, Engine: "legacy-1x", Scale: 1}, nil
+	}
+
+	// No anchor: pre-cropped table images carry no window title. The legacy
+	// strict 1x parse handles exactly those. NO scale ladder runs here - an
+	// anchorless image that the strict parse cannot read is not something to
+	// guess at.
 	grid := binarizeFull(img)
-	strictRows, strictRegion := parseParticipationGrid(grid, font, strictClock)
-	best := scaledOutcome{
-		rows:      strictRows,
-		engine:    "strict-1x",
-		scale:     1,
-		header:    strictRegion.found,
-		quality:   parseQuality(strictRows, 1),
-		truncated: strictClock.expiredNow(),
-	}
-
-	est0, _ := estimateScaleAndFirstRow(grid)
-	if est0 < gpqMinScaledEst {
-		if est0 == 0 && len(strictRows) == 0 {
-			if out := parseScaledLadder(img, grid, font, sweepClock, nccClock); out.quality > best.quality {
-				best = out
-			}
+	rows, _ := parseParticipationGrid(grid, font, decodeClock)
+	if len(rows) == 0 {
+		if run.truncated.Load() {
+			return &ParseResult{Truncated: true, Engine: "legacy-1x", Scale: 1}, nil
 		}
-	} else {
-		// Re-run the pitch estimate on the chrome-cleaned grid: parsing works
-		// on the cleaned plane, and chrome runs shift band boundaries, so an
-		// estimate taken from the raw grid can anchor the first row a band
-		// off. The raw estimate only sizes the cleaning caps.
-		cleanGrid := cloneGrid(grid)
-		clearLongVerticalRuns(cleanGrid, scalePx(gpqNCCMaxRun1x, est0))
-		clearLongHorizontalRuns(cleanGrid, scalePx(gpqNCCMaxRunH1x, est0))
-		est, firstRowY := estimateScaleAndFirstRow(cleanGrid)
-		if est < gpqMinScaledEst {
-			est, firstRowY = est0, -1
-		}
-		if out := parseScaledAround(img, est, firstRowY, cleanGrid, font, sweepClock, nccClock); out.quality > best.quality {
-			best = out
-		}
+		return nil, errCulvertWindowNotFound
 	}
-
-	res := &ParseResult{
-		Scale:       best.scale,
-		Engine:      best.engine,
-		HeaderFound: best.header,
-	}
-	res.Rows = resolveRows(best.rows, memberNames, &res.Defects)
-	// Truncation is a property of the WINNING candidate: a complete parse
-	// selected by arbitration is trustworthy even when a losing side pass ran
-	// out of budget (slower machines routinely clip the strict-1x junk pass on
-	// scaled screenshots). Only when nothing was parsed does any expiry count.
-	res.Truncated = best.truncated || (len(best.rows) == 0 && run.truncated.Load())
+	res := &ParseResult{Scale: 1, Engine: "legacy-1x"}
+	res.Rows = resolveRows(rows, memberNames, &res.Defects)
+	res.Truncated = decodeClock.expiredNow()
 	return res, nil
 }
 
@@ -920,4 +548,18 @@ type errTooLarge struct{}
 
 func (errTooLarge) Error() string {
 	return "image is too large to parse - please post the screenshot at its original size"
+}
+
+// ErrCulvertWindowNotFound is returned when neither the window-title anchor
+// nor the legacy pre-cropped-table parse recognises the image: honest
+// failure beats guessing at scales.
+var ErrCulvertWindowNotFound = errWindowNotFound{}
+
+// errCulvertWindowNotFound is the internal alias the parser returns.
+var errCulvertWindowNotFound error = ErrCulvertWindowNotFound
+
+type errWindowNotFound struct{}
+
+func (errWindowNotFound) Error() string {
+	return "could not locate the culvert window in this image - please post a screenshot of the full Guild window (Member Participation Status page)"
 }

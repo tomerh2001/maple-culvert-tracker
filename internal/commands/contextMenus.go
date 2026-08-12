@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,30 +36,6 @@ func collectImageURLs(msg *discordgo.Message) []string {
 		}
 	}
 	return imageURLs
-}
-
-// parseImagesFromMessage is the message context menu version of /parse-images:
-// right click a message with GPQ score screenshots -> Apps -> Parse Images.
-// Submitter-gated, matching the docs.
-func parseImagesFromMessage(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if !requireSubmitPermission(s, i) {
-		return
-	}
-	r := deferReply(s, i, false)
-
-	msg := targetMessage(s, i)
-	if msg == nil {
-		r.Edit("Failed to fetch the selected message.")
-		return
-	}
-
-	imageURLs := collectImageURLs(msg)
-	if len(imageURLs) == 0 {
-		r.Edit("No image attachments found on the selected message.")
-		return
-	}
-
-	runParseImages(r, imageURLs)
 }
 
 // submitScoresFromMessage is the one-step message context menu submission:
@@ -138,25 +115,40 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 	// Submission safety gates: an incomplete (time-limited) or internally
 	// conflicting parse must never be written to the database.
 	if oc.truncated {
-		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again or crop the screenshot, or run Parse Images and submit the verified JSON instead.")
+		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again, or run `/parse-images` and submit the verified JSON instead.")
 		return "", false
 	}
 	if len(oc.conflicts) > 0 {
 		r.Edit("Nothing submitted: the images disagree on some characters' scores:\n- " +
 			strings.Join(capList(oc.conflicts, 10), "\n- ") +
-			"\nRun Parse Images on the message, verify the JSON, then submit that instead.")
+			"\nRun `/parse-images` on the message link, verify the JSON, then submit that instead.")
 		return "", false
 	}
 	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
 		r.Edit("Nothing submitted: parsed scores are not in descending order (`" +
 			oc.merged[idx-1].Name + "` -> `" + oc.merged[idx].Name +
-			"`), which usually means an OCR misread. Run Parse Images on the message, verify the JSON, then submit that instead.")
+			"`), which usually means an OCR misread. Run `/parse-images` on the message link, verify the JSON, then submit that instead.")
 		return "", false
 	}
+	skippedTruncated := []string{}
 	for _, e := range oc.merged {
+		if !e.Matched && e.Ellipsis {
+			// The game truncated this name with an ellipsis and it matches
+			// no tracked character: the raw decode is an INCOMPLETE name,
+			// and auto-tracking it would create a bogus character. Skip it
+			// with a note instead.
+			skippedTruncated = append(skippedTruncated, e.Name)
+			continue
+		}
 		scores[e.Name] = e.Score
 	}
 	// Defects are non-fatal (the gates above cover the fatal cases) but they
 	// must reach the receipt - never silently dropped.
-	return defectsWarning(oc.defects), true
+	warnings = defectsWarning(oc.defects)
+	if len(skippedTruncated) > 0 {
+		warnings += "\n:warning: Skipped " + strconv.Itoa(len(skippedTruncated)) +
+			" truncated name(s) matching no tracked character: `" + strings.Join(capList(skippedTruncated, 10), "`, `") +
+			"` - the screenshot cuts these names short, so they were NOT auto-tracked. Track the full names with `/track-characters` and resubmit."
+	}
+	return warnings, true
 }

@@ -355,10 +355,9 @@ var Commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	// ── Context menus (right click -> Apps) ─────────────────────────────────
-	{
-		Name: "Parse Images",
-		Type: discordgo.MessageApplicationCommand,
-	},
+	// Submit Scores is deliberately the ONLY message menu: parsing without
+	// submitting stays available as /parse-images, and one obvious menu beats
+	// two near-identical ones.
 	{
 		Name: "Submit Scores",
 		Type: discordgo.MessageApplicationCommand,

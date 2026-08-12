@@ -9,8 +9,9 @@ import (
 
 // TestRealWorldSample gates the parser against a real user screenshot:
 // smooth 2x UI scale, 4-bit-per-channel quantized colors (re-encoded by an
-// image host). Requirements: at least 15 of the 17 rows parsed, ZERO wrong
-// scores (a misread is worse than a miss), under 10 seconds.
+// image host). The title anchor fixes (scale, origin), so the parse must be
+// COMPLETE: all 17 rows, ZERO wrong scores (a misread is worse than a
+// miss), under 8 seconds.
 func TestRealWorldSample(t *testing.T) {
 	data, err := os.ReadFile("../../../provided/real-sample.png")
 	if err != nil {
@@ -54,11 +55,46 @@ func TestRealWorldSample(t *testing.T) {
 		}
 		correct++
 	}
-	if correct < 15 {
-		t.Errorf("only %d/17 rows correct, need >= 15", correct)
+	if correct < 17 {
+		t.Errorf("only %d/17 rows correct, need 17/17", correct)
 	}
-	if elapsed > 10*time.Second {
-		t.Errorf("parse took %s, need < 10s", elapsed)
+	if elapsed > 8*time.Second {
+		t.Errorf("parse took %s, need < 8s", elapsed)
+	}
+}
+
+// TestRealWorldSampleRawNamesComplete pins the fix for the clipped-name bug:
+// the anchored name crop spans the FULL rendered column, so raw decodes of
+// an empty-roster parse carry the complete names ("StarryLeyva" with the
+// trailing "a", "StellaMaris" with the trailing s, "IDKJagg" with both g's -
+// the legacy 68px crop lost their tails). Compared under normName (the l/I
+// fold plus diacritic stripping - accents are sub-pixel noise, letter
+// skeletons are not).
+func TestRealWorldSampleRawNamesComplete(t *testing.T) {
+	data, err := os.ReadFile("../../../provided/real-sample.png")
+	if err != nil {
+		t.Skip("no real sample present")
+	}
+	font, err := LoadGPQFont()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ParseParticipation(data, nil, font)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raws := map[string]bool{}
+	for _, e := range res.Rows {
+		raws[normName(e.RawName)] = true
+	}
+	for _, want := range []string{"StarryLeyva", "StellaMaris", "unrenquited", "IDKJagg", "Heartorias", "Xenpapi", "Senpapi"} {
+		if !raws[normName(want)] {
+			got := make([]string, 0, len(res.Rows))
+			for _, e := range res.Rows {
+				got = append(got, e.RawName)
+			}
+			t.Errorf("no raw decode for %q (complete name) - raw decodes: %v", want, got)
+		}
 	}
 }
 

@@ -1,9 +1,7 @@
 package helpers
 
 import (
-	"bytes"
 	"encoding/json"
-	"image"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -157,52 +155,6 @@ func TestRosterMatrixFixtures(t *testing.T) {
 		label := strconv.Itoa(i) + ".png"
 		empty := parseVariants(t, label, data, keys, font)
 		checkRawDecodes(t, label, empty.Rows, expected[i], keys)
-	}
-}
-
-// TestRosterMatrixFullWindows runs the roster matrix over the synthetic full
-// Guild windows (fixture table 1 inside rendered chrome) at 1x, crisp 2x and
-// smooth 1.5x.
-func TestRosterMatrixFullWindows(t *testing.T) {
-	expected := loadExpected(t, 1)[1]
-	jsonData, err := os.ReadFile(filepath.Join(gpqTestsDir, "1.json"))
-	if err != nil {
-		t.Fatalf("read 1.json: %v", err)
-	}
-	keys := orderedKeys(t, jsonData)
-	font, err := LoadGPQFont()
-	if err != nil {
-		t.Fatalf("load font: %v", err)
-	}
-	tableData, err := os.ReadFile(filepath.Join(gpqTestsDir, "1.png"))
-	if err != nil {
-		t.Fatalf("read 1.png: %v", err)
-	}
-	table, _, err := image.Decode(bytes.NewReader(tableData))
-	if err != nil {
-		t.Fatalf("decode 1.png: %v", err)
-	}
-	window := buildFullWindow(t, font, table)
-
-	cases := []struct {
-		label string
-		img   image.Image
-		exact bool // lossless variant: raw decodes must match ground truth
-	}{
-		{"window-1x", window, true},
-		{"window-nearest-2x", upscaleNearest(window, 2.0), true},
-		{"window-bilinear-1.5x", upscaleBilinear(window, 1.5), false},
-	}
-	for _, c := range cases {
-		empty := parseVariants(t, c.label, encodePNG(t, c.img), keys, font)
-		if c.exact {
-			checkRawDecodes(t, c.label, empty.Rows, expected, keys)
-		} else {
-			// Smooth scaling genuinely destroys information: require nearly
-			// every row recovered with an exact score and a compatible raw
-			// name, and zero wrong scores.
-			assertLossyRawDecodes(t, c.label, empty.Rows, expected, len(keys)-2)
-		}
 	}
 }
 

@@ -35,7 +35,6 @@ var CommandHandlers = map[string]func(s *discordgo.Session, i *discordgo.Interac
 	"config":            configCommand,
 	"reset":             resetData,
 	// Context menu commands (right click a message or member -> Apps).
-	"Parse Images":  parseImagesFromMessage,
 	"Submit Scores": submitScoresFromMessage,
 	"Culvert":       culvertBase,
 }
