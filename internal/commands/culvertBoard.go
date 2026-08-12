@@ -15,7 +15,7 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
-// emptyWeekMessage is the /culvert-board empty state.
+// emptyWeekMessage is the /culvert-all empty state.
 func emptyWeekMessage(weekLabel string) string {
 	return "No scores recorded for " + weekLabel + " yet.\nSubmitters: post a screenshot and right click it -> Apps -> **Submit Scores**."
 }
@@ -50,7 +50,7 @@ func culvertBoard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Population aligned with the tracked roster (GetActiveCharacters).
 	chars, _, err := cmdhelpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB)
 	if err != nil {
-		log.Println("culvert-board: get active characters:", err)
+		log.Println("culvert-all: get active characters:", err)
 		r.Edit("Failed to retrieve characters' data from database. See server logs.")
 		return
 	}
@@ -74,7 +74,7 @@ func culvertBoard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		MapleCharacterName string
 	}{}
 	if err := stmt.Query(db.DB, &dest); err != nil {
-		log.Println("culvert-board:", err)
+		log.Println("culvert-all:", err)
 		r.Edit("Failed to retrieve characters' data from database. See server logs.")
 		return
 	}

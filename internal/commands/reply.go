@@ -22,7 +22,7 @@ type reply struct {
 // placeholder) and returns a handle used to fill it in later with Edit.
 // ephemeral=true keeps the reply (and every followup chunk) visible only to
 // the invoking user - the default for all commands except /culvert and
-// /culvert-board.
+// /culvert-all.
 func deferReply(s *discordgo.Session, i *discordgo.InteractionCreate, ephemeral bool) *reply {
 	resp := &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,

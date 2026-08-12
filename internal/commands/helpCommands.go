@@ -23,7 +23,7 @@ That connects your MapleStory character to your Discord account.
 - Add ` + "`from:`" + `/` + "`to:`" + ` (YYYY-MM-DD or a Discord timestamp) to bound the chart
 
 **3. Guild-wide stats**
-` + "`/culvert-board`" + ` - the guild's scores for a week (add ` + "`date:`" + ` for past weeks)
+` + "`/culvert-all`" + ` - the guild's scores for a week (add ` + "`date:`" + ` for past weeks)
 
 **4. How scores get in**
 Submitters post a screenshot of the in-game ranking and right click it -> Apps -> **Submit Scores** - that is the only submission path. Single-score corrections go through ` + "`/set-culvert`" + `. If your score is missing, poke a submitter.

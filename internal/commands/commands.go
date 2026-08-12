@@ -14,7 +14,7 @@ var setCulvertScoreMin = float64(0)
 var Commands = []*discordgo.ApplicationCommand{
 	// ── Everyone ────────────────────────────────────────────────────────────
 	{
-		Name:        "culvert-help",
+		Name:        "help",
 		Description: "How to use this bot",
 	},
 	{
@@ -78,7 +78,7 @@ var Commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
-		Name:        "culvert-board",
+		Name:        "culvert-all",
 		Description: "Guild culvert leaderboard for a week (default: this week)",
 		Options: []*discordgo.ApplicationCommandOption{
 			{

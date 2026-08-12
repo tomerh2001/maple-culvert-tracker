@@ -12,7 +12,7 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 - **One announcement per week, no spam**: in a designated channel the bot keeps a single message per culvert week with the full ranked table (edited in place on every submission), plus a thread with submission notes and personal-best shoutouts that @mention the member. Nothing else is ever posted, and only if a channel is configured.
 - **Members self-serve**: `/register` links a character to a Discord account, `/culvert` charts progression (yours, `name:@someone`, or any `name:SomeChar`), right click a member → Apps → **Culvert** works too.
 - **Correct week boundary**: the culvert week rolls over at the in-game reset instant, Thursday 00:00 UTC (03:00 Israel summer time) — not at Wednesday's calendar date.
-- **Quiet by default**: every command reply is ephemeral (visible only to the invoker) except the public `/culvert` and `/culvert-board`.
+- **Quiet by default**: every command reply is ephemeral (visible only to the invoker) except the public `/culvert` and `/culvert-all`.
 - **Multi-server shared database**: one deployment can serve several Discord servers over the same data (env-only config, see `DISCORD_EXTRA_GUILD_IDS`).
 
 ## Commands
@@ -21,11 +21,11 @@ The entire surface — 9 slash commands, 2 context menus:
 
 | Command | Who | What |
 |---|---|---|
-| `/culvert-help` | everyone | User guide |
+| `/help` | everyone | User guide |
 | `/register` | everyone | Link a character by `name:` (submitters can link for others with `user:@x`) |
 | `/unregister` | everyone | Untrack a character by `name:`, or all of a member's characters (history kept) |
 | `/culvert` | everyone | Progression chart: `name:` is a character or a `@mention` (default you); optional `from:`/`to:` dates |
-| `/culvert-board` | everyone | Weekly score-descending table (optional `date:`) |
+| `/culvert-all` | everyone | Weekly score-descending table (optional `date:`) |
 | `/set-culvert` | submitters | Set one character's score for a week (unknown names auto-tracked) |
 | `/config` | admins | View/change all bot settings (`setting:` + `value:`) |
 | `/setup` | admins | Admin setup guide + live status |
