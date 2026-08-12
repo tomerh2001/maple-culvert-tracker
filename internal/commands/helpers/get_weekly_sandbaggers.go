@@ -13,7 +13,7 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
-func GetWeeklySandbaggers(characters []string, rawDate string, weeks int, threshold float64) (sandbaggers *struct {
+func GetWeeklySandbaggers(tenantID string, characters []string, rawDate string, weeks int, threshold float64) (sandbaggers *struct {
 	NewSandbaggers       []data.WeeklySandbaggersStats
 	ZeroScoreSandbaggers []string
 }, err error) {
@@ -24,7 +24,7 @@ func GetWeeklySandbaggers(characters []string, rawDate string, weeks int, thresh
 		}{}
 
 	for _, v := range characters {
-		stmt := SELECT(CharacterCulvertScores.CulvertDate.AS("culvert_date"), CharacterCulvertScores.Score.AS("score")).FROM(Characters.INNER_JOIN(CharacterCulvertScores, CharacterCulvertScores.CharacterID.EQ(Characters.ID))).WHERE(Characters.MapleCharacterName.EQ(String(v))).LIMIT(int64(weeks)).ORDER_BY(CharacterCulvertScores.CulvertDate.DESC())
+		stmt := SELECT(CharacterCulvertScores.CulvertDate.AS("culvert_date"), CharacterCulvertScores.Score.AS("score")).FROM(Characters.INNER_JOIN(CharacterCulvertScores, CharacterCulvertScores.CharacterID.EQ(Characters.ID))).WHERE(Characters.MapleCharacterName.EQ(String(v)).AND(Characters.GuildID.EQ(String(tenantID)))).LIMIT(int64(weeks)).ORDER_BY(CharacterCulvertScores.CulvertDate.DESC())
 
 		scoresRawDb := []struct {
 			Score       int
@@ -52,7 +52,7 @@ func GetWeeklySandbaggers(characters []string, rawDate string, weeks int, thresh
 		slices.Reverse(chartData)
 
 		var charaStats *data.CharacterStatistics
-		charaStats, err = GetCharacterStatistics(db.DB, apiredis.RedisDB, v, rawDate, chartData)
+		charaStats, err = GetCharacterStatistics(db.DB, apiredis.RedisDB, tenantID, v, rawDate, chartData)
 		if err != nil {
 			return
 		}

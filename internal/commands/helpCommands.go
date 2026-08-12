@@ -29,12 +29,15 @@ That connects your MapleStory character to your Discord account.
 Submitters post a screenshot of the in-game ranking and right click it -> Apps -> **Submit Scores** - that is the only submission path. Single-score corrections go through ` + "`/set-culvert`" + `. If your score is missing, poke a submitter.
 
 The culvert week rolls over at **Thursday 00:00 UTC** (03:00 Israel summer time).
+Every server has its own private data - characters and scores never mix between servers.
 
 *Admins: type ` + "`/setup`" + ` for the setup guide.*
 
 *Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
 const setupText = `## Culvert Tracker - admin setup guide
+
+Anyone can add this bot to their server - each server's data (characters, scores, settings, announcements) is fully isolated. Setting it up for YOUR server takes two minutes:
 
 **1. Roles**
 - ` + "`/config setting:Discord Guild Role IDs value:@YourGuildRole`" + ` - members with this role are the tracked roster
@@ -54,7 +57,7 @@ Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status*
 - Single fixes (typos, missed rows, past weeks): ` + "`/set-culvert name:X score:123 date:YYYY-MM-DD`" + `
 
 **5. Housekeeping**
-` + "`/health`" + ` runs the full self-check, ` + "`/config`" + ` reviews all settings, ` + "`/unregister`" + ` untracks characters or members.
+` + "`/health`" + ` runs the full self-check for this server, ` + "`/config`" + ` reviews all settings, ` + "`/unregister`" + ` untracks characters or members, and ` + "`/reset-week`" + ` wipes this week's recorded scores (run it twice to confirm) if a submission went badly wrong.
 
 *Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
@@ -63,16 +66,17 @@ func helpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func setupCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	deferReply(s, i, true).EditChunked(setupText + "\n" + setupStatusBlock(s))
+	deferReply(s, i, true).EditChunked(setupText + "\n" + setupStatusBlock(s, tenantOf(i)))
 }
 
 // setupStatusMaxProblems caps the health issues shown in /setup's status block
 // (fails first); /health has the full list.
 const setupStatusMaxProblems = 8
 
-// setupStatusBlock renders the live tail of /setup: every /config setting's
-// set/unset state plus the current health warns/fails.
-func setupStatusBlock(s *discordgo.Session) string {
+// setupStatusBlock renders the live tail of /setup for the invoking tenant:
+// every /config setting's set/unset state plus the current health
+// warns/fails.
+func setupStatusBlock(s *discordgo.Session, tenantID string) string {
 	var b strings.Builder
 	b.WriteString("\n## Current status\n**Settings** (`/config` to change)")
 	for _, name := range editableSettingKeys() {
@@ -82,13 +86,13 @@ func setupStatusBlock(s *discordgo.Session) string {
 			label = d.Name
 		}
 		state := "not set"
-		if strings.TrimSpace(k.GetWithDefault(apiredis.RedisDB, "")) != "" {
+		if strings.TrimSpace(k.For(tenantID).GetWithDefault(apiredis.RedisDB, "")) != "" {
 			state = "set"
 		}
 		b.WriteString("\n- " + label + ": " + state)
 	}
 
-	problems := helpers.FilterProblems(helpers.RunHealthChecks(s))
+	problems := helpers.FilterProblems(helpers.RunHealthChecks(s, tenantID))
 	if len(problems) == 0 {
 		b.WriteString("\n\n:white_check_mark: All health checks pass.")
 		return b.String()

@@ -34,7 +34,8 @@ func MigrationV1(rdb *redis.Client) error {
 		"CULVERT_DUEL_THUMBNAIL_URL": OPTIONAL_CONF_CULVERT_DUEL_THUMBNAIL_URL,
 	}
 	for k, v := range migrationV1EnvToKeys {
-		err := v.Set(rdb, os.Getenv(k))
+		// Redis migrations run for the home deployment: default tenant.
+		err := v.For(data.PrimaryGuildID()).Set(rdb, os.Getenv(k))
 		if err != nil {
 			return err
 		}

@@ -11,4 +11,5 @@ type Characters struct {
 	ID                 int64 `sql:"primary_key"`
 	MapleCharacterName string
 	DiscordUserID      string
+	GuildID            string
 }

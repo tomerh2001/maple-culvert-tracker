@@ -13,11 +13,17 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db/testdb"
 )
 
-func insertCharacterWithOwner(t *testing.T, dbc *sql.DB, name, discordUserID string) {
+// testTenantA/B are two distinct tenants for isolation tests.
+const (
+	testTenantA = "111111111111111111"
+	testTenantB = "222222222222222222"
+)
+
+func insertCharacterWithOwner(t *testing.T, dbc *sql.DB, tenantID, name, discordUserID string) {
 	t.Helper()
 	if _, err := dbc.Exec(
-		`INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, $2)`,
-		name, discordUserID); err != nil {
+		`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, $2, $3)`,
+		name, discordUserID, tenantID); err != nil {
 		t.Fatalf("inserting character %q (%s): %v", name, discordUserID, err)
 	}
 }
@@ -27,11 +33,13 @@ func insertCharacterWithOwner(t *testing.T, dbc *sql.DB, name, discordUserID str
 // are included.
 func TestGetActiveCharactersBaseQuerySemantics(t *testing.T) {
 	dbc := testdb.TestDB(t)
-	insertCharacterWithOwner(t, dbc, "Untracked", "1")
-	insertCharacterWithOwner(t, dbc, "Unlinked", "2")
-	insertCharacterWithOwner(t, dbc, "Linked", "123456789012345678")
+	insertCharacterWithOwner(t, dbc, testTenantA, "Untracked", "1")
+	insertCharacterWithOwner(t, dbc, testTenantA, "Unlinked", "2")
+	insertCharacterWithOwner(t, dbc, testTenantA, "Linked", "123456789012345678")
+	// Another tenant's characters must never appear in A's roster.
+	insertCharacterWithOwner(t, dbc, testTenantB, "OtherGuild", "2")
 
-	chars, meta, err := GetActiveCharactersWithMeta(apiredis.RedisDB, dbc)
+	chars, meta, err := GetActiveCharactersWithMeta(apiredis.RedisDB, dbc, testTenantA)
 	if err != nil {
 		t.Fatalf("GetActiveCharactersWithMeta: %v", err)
 	}
@@ -54,6 +62,9 @@ func TestGetActiveCharactersBaseQuerySemantics(t *testing.T) {
 	if !got["Linked"] {
 		t.Error("roster is missing 'Linked' (real discord id)")
 	}
+	if got["OtherGuild"] {
+		t.Error("roster includes another tenant's character 'OtherGuild'")
+	}
 	if len(*chars) != 2 {
 		t.Errorf("roster size = %d, want 2 (%v)", len(*chars), got)
 	}
@@ -62,7 +73,7 @@ func TestGetActiveCharactersBaseQuerySemantics(t *testing.T) {
 func TestTrackCharactersOnConflictDoNothing(t *testing.T) {
 	dbc := testdb.TestDB(t)
 
-	created, ids, err := TrackCharacters(dbc, []string{"Alpha", "Beta"})
+	created, ids, err := TrackCharacters(dbc, testTenantA, []string{"Alpha", "Beta"})
 	if err != nil {
 		t.Fatalf("first TrackCharacters: %v", err)
 	}
@@ -75,7 +86,7 @@ func TestTrackCharactersOnConflictDoNothing(t *testing.T) {
 
 	// Re-tracking an existing name must be a no-op (ON CONFLICT DO NOTHING)
 	// that still resolves its id; new names are still created.
-	created2, ids2, err := TrackCharacters(dbc, []string{"Alpha", "Gamma"})
+	created2, ids2, err := TrackCharacters(dbc, testTenantA, []string{"Alpha", "Gamma"})
 	if err != nil {
 		t.Fatalf("second TrackCharacters: %v", err)
 	}

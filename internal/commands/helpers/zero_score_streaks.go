@@ -18,7 +18,7 @@ type ZeroScoreStreak struct {
 
 // GetCurrentZeroScoreStreaks returns characters that have a zero score on
 // latestDate and counts their consecutive stored zero-score records backwards.
-func GetCurrentZeroScoreStreaks(db *sql.DB, latestDate time.Time) ([]ZeroScoreStreak, error) {
+func GetCurrentZeroScoreStreaks(db *sql.DB, tenantID string, latestDate time.Time) ([]ZeroScoreStreak, error) {
 	const query = `WITH ranked AS (
 		SELECT
 			c.id AS character_id,
@@ -31,6 +31,7 @@ func GetCurrentZeroScoreStreaks(db *sql.DB, latestDate time.Time) ([]ZeroScoreSt
 			) AS rn
 		FROM characters c
 		INNER JOIN character_culvert_scores sc ON sc.character_id = c.id
+		WHERE c.guild_id = $2
 	),
 	first_non_zero AS (
 		SELECT
@@ -66,7 +67,7 @@ func GetCurrentZeroScoreStreaks(db *sql.DB, latestDate time.Time) ([]ZeroScoreSt
 	INNER JOIN latest_characters lc ON lc.character_id = cs.character_id
 	ORDER BY cs.zero_streak DESC, cs.maple_character_name`
 
-	rows, err := db.Query(query, latestDate)
+	rows, err := db.Query(query, latestDate, tenantID)
 	if err != nil {
 		return nil, err
 	}

@@ -30,23 +30,24 @@ func SplitNameList(raw string) []string {
 }
 
 // TrackCharacters inserts the given names as unlinked-but-tracked characters
-// (discord_user_id = '2'), skipping names that already exist (ON CONFLICT DO
-// NOTHING). It returns the names actually created (in input order) and a map
-// of name -> character id covering every input name that exists afterwards.
-func TrackCharacters(dbc *sql.DB, names []string) (created []string, ids map[string]int64, err error) {
+// (discord_user_id = '2') of the tenant, skipping names that already exist in
+// that tenant (ON CONFLICT DO NOTHING). It returns the names actually created
+// (in input order) and a map of name -> character id covering every input
+// name that exists afterwards.
+func TrackCharacters(dbc *sql.DB, tenantID string, names []string) (created []string, ids map[string]int64, err error) {
 	created = []string{}
 	ids = make(map[string]int64, len(names))
 	for _, name := range names {
 		var id int64
 		err := dbc.QueryRow(
-			`INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, '2')
-			 ON CONFLICT (maple_character_name) DO NOTHING RETURNING id`, name).Scan(&id)
+			`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, '2', $2)
+			 ON CONFLICT (guild_id, maple_character_name) DO NOTHING RETURNING id`, name, tenantID).Scan(&id)
 		switch {
 		case err == sql.ErrNoRows:
 			// Already exists: resolve its id (case-insensitive to also catch
 			// case-variant duplicates guarded elsewhere).
 			if lerr := dbc.QueryRow(
-				`SELECT id FROM characters WHERE LOWER(maple_character_name) = LOWER($1)`, name).Scan(&id); lerr != nil {
+				`SELECT id FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND guild_id = $2`, name, tenantID).Scan(&id); lerr != nil {
 				return created, ids, fmt.Errorf("looking up existing character %q: %w", name, lerr)
 			}
 			ids[name] = id

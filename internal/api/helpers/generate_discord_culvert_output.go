@@ -11,7 +11,7 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
-func GenerateDiscordCulvertOutput(chartImageBinData io.ReadCloser, charName string, date string, otherStatsStruct *data.CharacterStatistics) *discordgo.InteractionResponseData {
+func GenerateDiscordCulvertOutput(chartImageBinData io.ReadCloser, tenantID string, charName string, date string, otherStatsStruct *data.CharacterStatistics) *discordgo.InteractionResponseData {
 	// date is possibly empty
 	content := strings.Trim(charName+" "+date, " ")
 
@@ -26,7 +26,7 @@ func GenerateDiscordCulvertOutput(chartImageBinData io.ReadCloser, charName stri
 		Fields: []*discordgo.MessageEmbedField{},
 	}
 
-	charData, err := FetchCharacterData(charName, apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, os.Getenv("MAPLE_REGION")))
+	charData, err := FetchCharacterData(charName, apiredis.OPTIONAL_CONF_MAPLE_REGION.For(tenantID).GetWithDefault(apiredis.RedisDB, os.Getenv("MAPLE_REGION")))
 	if err == nil {
 		embeddedData.Title = strings.Trim(charData.CharacterName+" "+date, " ")
 		embeddedData.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: charData.CharacterImgURL}

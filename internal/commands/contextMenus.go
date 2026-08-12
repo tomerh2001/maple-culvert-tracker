@@ -50,6 +50,14 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 	if !requireSubmitPermission(s, i) {
 		return
 	}
+	// Abuse guard: at most one concurrent submission per tenant (the OCR is
+	// CPU-heavy). A second concurrent run bounces with an ephemeral note.
+	tenant := tenantOf(i)
+	if !tryAcquireSubmit(tenant) {
+		registerReply(s, i, submitBusyMessage)
+		return
+	}
+	defer releaseSubmit(tenant)
 	r := deferReply(s, i, true)
 
 	msg := targetMessage(s, i)
@@ -61,7 +69,7 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 	week := helpers.CurrentCulvertWeek(time.Now())
 
 	scores := map[string]int{}
-	parseWarnings, ok := scoresFromMessage(s, r, msg, scores)
+	parseWarnings, ok := scoresFromMessage(s, r, tenant, msg, scores)
 	if !ok {
 		return
 	}
@@ -70,11 +78,11 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 }
 
 // scoresFromMessage fills scores from a message: a pre-parsed .txt/.json
-// scores file when present, otherwise OCR of its image attachments. On
-// failure it edits the (deferred) interaction response itself and returns
-// ok=false. On success, warnings carries any non-fatal parse defects for the
-// caller's receipt.
-func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, scores map[string]int) (warnings string, ok bool) {
+// scores file when present, otherwise OCR of its image attachments (matched
+// against the tenant's roster). On failure it edits the (deferred)
+// interaction response itself and returns ok=false. On success, warnings
+// carries any non-fatal parse defects for the caller's receipt.
+func scoresFromMessage(s *discordgo.Session, r *reply, tenantID string, msg *discordgo.Message, scores map[string]int) (warnings string, ok bool) {
 	var scoresAttachment *discordgo.MessageAttachment
 	for _, a := range msg.Attachments {
 		if strings.HasSuffix(a.Filename, ".txt") || strings.HasSuffix(a.Filename, ".json") {
@@ -107,7 +115,7 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 		return "", false
 	}
 
-	oc, err := ocrImagesToScores(imageURLs)
+	oc, err := ocrImagesToScores(tenantID, imageURLs)
 	if err != nil {
 		// Screenshot-fixable failures carry the requirements explainer and
 		// the example screenshot; internal errors stay text-only. The

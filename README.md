@@ -12,12 +12,12 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 - **One announcement per week, no spam**: in a designated channel the bot keeps a single message per culvert week with the full ranked table (edited in place on every submission), plus a thread with submission notes and personal-best shoutouts that @mention the member. Nothing else is ever posted, and only if a channel is configured.
 - **Members self-serve**: `/register` links a character to a Discord account, `/culvert` charts progression (yours, `name:@someone`, or any `name:SomeChar`), right click a member → Apps → **Culvert** works too.
 - **Correct week boundary**: the culvert week rolls over at the in-game reset instant, Thursday 00:00 UTC (03:00 Israel summer time) — not at Wednesday's calendar date.
-- **Quiet by default**: every command reply is ephemeral (visible only to the invoker) except the public `/culvert` and `/culvert-board`.
-- **Multi-server shared database**: one deployment can serve several Discord servers over the same data (env-only config, see `DISCORD_EXTRA_GUILD_IDS`).
+- **Quiet by default**: every command reply is ephemeral (visible only to the invoker) except the public `/culvert` and `/culvert-board`. Joining a server never triggers a single unprompted message — `/setup` is the entry point.
+- **Installable by ANY server**: commands are registered globally, so anyone can invite one deployment of the bot. Every server gets its own fully isolated data — characters, scores, settings, rosters and announcements never mix between servers. The deployment owner's home server(s) (see `DISCORD_GUILD_ID`/`DISCORD_EXTRA_GUILD_IDS`) can still deliberately share one dataset.
 
 ## Commands
 
-The entire surface — 9 slash commands, 2 context menus:
+The entire surface — 10 slash commands, 2 context menus:
 
 | Command | Who | What |
 |---|---|---|
@@ -29,13 +29,25 @@ The entire surface — 9 slash commands, 2 context menus:
 | `/set-culvert` | submitters | Set one character's score for a week (unknown names auto-tracked) |
 | `/config` | admins | View/change all bot settings (`setting:` + `value:`) |
 | `/setup` | admins | Admin setup guide + live status |
-| `/health` | admins | Full self-check (DB, Discord permissions, config) |
+| `/health` | admins | Full self-check for THIS server (DB, Discord permissions, config) |
+| `/reset-week` | admins | Delete ALL of this server's recorded scores for the current week (run twice within 10 minutes to confirm; characters stay tracked) |
 | Right click message → Apps → **Submit Scores** | submitters | THE submission path (OCR or a `.json` scores file) |
 | Right click member → Apps → **Culvert** | everyone | Their chart |
 
 Date options accept `YYYY-MM-DD` or a Discord timestamp mention (`<t:123456>`).
 
-## Deployment
+## Adding the bot to your server (admin quickstart)
+
+If someone already hosts this bot, you only need to invite it — no hosting required:
+
+1. Invite the bot (ask the host for the invite link; it needs the `bot applications.commands` scopes).
+2. Type `/setup` — it walks you through the two-minute setup and shows your server's live status.
+3. Optionally `/config` a submitter role and a weekly announcement channel.
+4. Post a screenshot of the in-game *Guild → Member Participation Status* window and right click it → Apps → **Submit Scores**. Done.
+
+Your server's data is private to your server: per-server characters, scores, settings, member rosters and announcements. Botched a submission run? `/reset-week` wipes the current week's scores (with a run-again-to-confirm guard).
+
+## Deployment (hosting it yourself)
 
 Images are published by CI to `ghcr.io/tomerh2001/maple-culvert-tracker/{bot,chartmaker,periodicredis,cron}:latest` on every push to `master`.
 
@@ -44,10 +56,12 @@ Images are published by CI to `ghcr.io/tomerh2001/maple-culvert-tracker/{bot,cha
 3. `docker compose up -d` — the bot runs its own DB migrations on boot.
 4. In Discord: `/setup` walks you through roles, the weekly channel, and the first submission.
 
+Commands register globally on boot; any server that invites the bot is served, each with isolated data (tenant = the server, keyed by guild id in both postgres and redis).
+
 ### Environment variables of note
 
-- `DISCORD_GUILD_ID` — the primary Discord server.
-- `DISCORD_EXTRA_GUILD_IDS` — optional comma-separated additional server ids sharing the same database (commands work everywhere; announcements post to the one configured channel). Deliberately env-only: this cannot be changed from Discord.
+- `DISCORD_GUILD_ID` — the deployment's primary Discord server. Required: it defines the DEFAULT tenant (the home deployment's shared dataset, and the key prefix that pre-tenant versions used — existing data is picked up with zero migration).
+- `DISCORD_EXTRA_GUILD_IDS` — optional comma-separated additional server ids that SHARE the primary server's dataset (commands work everywhere; announcements post to that tenant's configured channel). Deliberately env-only: this cannot be changed from Discord. Servers NOT listed here get their own isolated data automatically.
 - `JWT_SECRET` — internal API auth between the bot and itself; set it to anything long and random.
 
 ## Development
@@ -59,7 +73,8 @@ Go 1.25+; `go test ./...` runs the OCR suite against real fixture screenshots in
 - Web admin panel, `/login`, and the JWT web auth are **removed** — `/config` and the other slash commands cover everything.
 - OCR accepts full Guild-window screenshots (header-anchored table detection) instead of pre-cropped images only.
 - Weekly announcement message + thread instead of per-submission channel messages; no reminder/monthly-report crons; no sandbagger imagery.
-- The command surface is deliberately tiny (9 slash commands + 2 context menus). Upstream's duel/sandbagger/rat novelty commands, the bulk roster commands, csv export, and all slash-command submission paths were removed — right click → **Submit Scores** and `/set-culvert` cover submission entirely.
+- Publicly installable with strict per-server data isolation (upstream is single-guild). Global command registration; per-tenant redis and postgres scoping.
+- The command surface is deliberately tiny (10 slash commands + 2 context menus). Upstream's duel/sandbagger/rat novelty commands, the bulk roster commands, csv export, and all slash-command submission paths were removed — right click → **Submit Scores** and `/set-culvert` cover submission entirely.
 - Command replies are text-only and ephemeral by default. Exactly two replies attach an image: the `/culvert` chart, and the **Submit Scores** OCR failure help, which explains the screenshot requirements and attaches an example screenshot.
 - Week keys stay Wednesday dates, but the current week is computed from the true reset instant (Thursday 00:00 UTC).
 

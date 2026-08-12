@@ -6,11 +6,12 @@ import (
 
 var setCulvertScoreMin = float64(0)
 
-// Commands is the ENTIRE deliberately-small surface: 9 slash commands and 2
-// context menus. Score submission has exactly one path (right click a
-// screenshot message -> Apps -> Submit Scores); /set-culvert covers manual
-// corrections. UpdateCommands deletes anything else that is still registered
-// remotely.
+// Commands is the ENTIRE deliberately-small surface: 10 slash commands and 2
+// context menus, registered GLOBALLY (any server may install the bot; each
+// server's data is tenant-isolated). Score submission has exactly one path
+// (right click a screenshot message -> Apps -> Submit Scores); /set-culvert
+// covers manual corrections. UpdateCommands bulk-overwrites the global set,
+// deleting anything else that is still registered remotely.
 var Commands = []*discordgo.ApplicationCommand{
 	// ── Everyone ────────────────────────────────────────────────────────────
 	{
@@ -141,6 +142,10 @@ var Commands = []*discordgo.ApplicationCommand{
 	{
 		Name:        "health",
 		Description: "ADMINS: Run the bot's health checks (database, Discord permissions, config)",
+	},
+	{
+		Name:        "reset-week",
+		Description: "ADMINS: Remove ALL recorded scores for the current week (run twice to confirm)",
 	},
 	// ── Context menus (right click -> Apps) ─────────────────────────────────
 	{

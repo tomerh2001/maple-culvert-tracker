@@ -3,7 +3,6 @@ package apiredis
 import (
 	"context"
 	"errors"
-	"os"
 	"time"
 
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
@@ -36,41 +35,76 @@ type redisInternalKey struct {
 func (k redisInternalKey) ToString() string {
 	return k.Name
 }
-func (k redisInternalKey) Get(rdb *redis.Client) (string, error) {
+
+// ScopedKey is a redisInternalKey bound to one tenant's key space. Every read
+// or write goes through a ScopedKey, so no call site can touch redis without
+// first saying WHOSE data it means: k.For(tenantID) for tenant data,
+// k.Global() for the few process-global keys.
+type ScopedKey struct {
+	key    redisInternalKey
+	tenant string
+}
+
+// For scopes the key to one tenant (see data.TenantID). The stored key is
+// "<tenant>_<name>" - for the default tenant that is byte-identical to the
+// pre-tenant "<primary guild id>_<name>" scheme, so existing data is reused
+// as-is.
+func (k redisInternalKey) For(tenantID string) ScopedKey {
+	return ScopedKey{key: k, tenant: tenantID}
+}
+
+// Global scopes a PROCESS-GLOBAL key (schema versions, one-shot data fixes,
+// command registration status, the active-guild registry): state about the
+// deployment itself, not about any one server's data. Historically these were
+// stored under the primary guild's prefix like everything else; Global keeps
+// those exact key strings (so nothing re-runs or is lost) while naming the
+// intent honestly at the call site.
+func (k redisInternalKey) Global() ScopedKey {
+	return ScopedKey{key: k, tenant: data.PrimaryGuildID()}
+}
+
+// RedisKey returns the full key string stored in redis.
+func (s ScopedKey) RedisKey() string {
+	return s.tenant + "_" + s.key.Name
+}
+
+func (s ScopedKey) Get(rdb *redis.Client) (string, error) {
 	if rdb == nil || *rdb == nil {
 		return "", ErrNoRedis
 	}
-	q := (*rdb).Do(context.Background(), (*rdb).B().Get().Key(os.Getenv(data.EnvVarDiscordGuildID)+"_"+k.ToString()).Build())
+	q := (*rdb).Do(context.Background(), (*rdb).B().Get().Key(s.RedisKey()).Build())
 	if err := q.Error(); err != nil {
 		return "", err
 	}
 	return q.ToString()
 }
-func (k redisInternalKey) Set(rdb *redis.Client, v string) error {
+
+func (s ScopedKey) Set(rdb *redis.Client, v string) error {
 	if rdb == nil || *rdb == nil {
 		return ErrNoRedis
 	}
-	return (*rdb).Do(context.Background(), (*rdb).B().Set().Key(os.Getenv(data.EnvVarDiscordGuildID)+"_"+k.ToString()).Value(v).Build()).Error()
+	return (*rdb).Do(context.Background(), (*rdb).B().Set().Key(s.RedisKey()).Value(v).Build()).Error()
 }
 
 // SetEx stores the value with an expiry - used for short-lived confirmation
-// keys (e.g. the resubmit-to-confirm overwrite flow).
-func (k redisInternalKey) SetEx(rdb *redis.Client, v string, ttl time.Duration) error {
+// keys (the resubmit-to-confirm overwrite and /reset-week flows).
+func (s ScopedKey) SetEx(rdb *redis.Client, v string, ttl time.Duration) error {
 	if rdb == nil || *rdb == nil {
 		return ErrNoRedis
 	}
-	return (*rdb).Do(context.Background(), (*rdb).B().Set().Key(os.Getenv(data.EnvVarDiscordGuildID)+"_"+k.ToString()).Value(v).ExSeconds(int64(ttl.Seconds())).Build()).Error()
+	return (*rdb).Do(context.Background(), (*rdb).B().Set().Key(s.RedisKey()).Value(v).ExSeconds(int64(ttl.Seconds())).Build()).Error()
 }
 
 // Del removes the key (no-op when absent).
-func (k redisInternalKey) Del(rdb *redis.Client) error {
+func (s ScopedKey) Del(rdb *redis.Client) error {
 	if rdb == nil || *rdb == nil {
 		return ErrNoRedis
 	}
-	return (*rdb).Do(context.Background(), (*rdb).B().Del().Key(os.Getenv(data.EnvVarDiscordGuildID)+"_"+k.ToString()).Build()).Error()
+	return (*rdb).Do(context.Background(), (*rdb).B().Del().Key(s.RedisKey()).Build()).Error()
 }
-func (k redisInternalKey) GetWithDefault(rdb *redis.Client, defaultVal string) string {
-	v, err := k.Get(rdb)
+
+func (s ScopedKey) GetWithDefault(rdb *redis.Client, defaultVal string) string {
+	v, err := s.Get(rdb)
 	if err == nil {
 		return v
 	}

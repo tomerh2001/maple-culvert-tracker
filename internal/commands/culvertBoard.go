@@ -27,6 +27,7 @@ const noTrackedCharactersMessage = "No characters are tracked yet. Members can `
 // week (default: the current one). Public reply, text only.
 func culvertBoard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, false)
+	tenant := tenantOf(i)
 
 	week := cmdhelpers.CurrentCulvertWeek(time.Now())
 	for _, v := range i.ApplicationCommandData().Options {
@@ -48,7 +49,7 @@ func culvertBoard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	weekLabel := cmdhelpers.FormatWeekLabel(week, time.Now())
 
 	// Population aligned with the tracked roster (GetActiveCharacters).
-	chars, _, err := cmdhelpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB)
+	chars, _, err := cmdhelpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB, tenant)
 	if err != nil {
 		log.Println("culvert-board: get active characters:", err)
 		r.Edit("Failed to retrieve characters' data from database. See server logs.")

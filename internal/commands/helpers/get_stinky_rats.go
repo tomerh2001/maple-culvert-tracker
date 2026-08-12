@@ -13,7 +13,7 @@ import (
 
 // I was overcaffeinated when writing this
 
-func GetStinkyRats(db *sql.DB, vk *valkey.Client, characters []model.Characters, date string, weeks int, threshold float64, typeshit string) (foundYouYoureFucked []struct {
+func GetStinkyRats(db *sql.DB, vk *valkey.Client, tenantID string, characters []model.Characters, date string, weeks int, threshold float64, typeshit string) (foundYouYoureFucked []struct {
 	SixSeven string
 	LWeeks   int
 	WWeeks   int
@@ -79,7 +79,7 @@ func GetStinkyRats(db *sql.DB, vk *valkey.Client, characters []model.Characters,
 
 			if lastKnownGoodScore <= 10 {
 				lastKnownGoodScore = score
-				if sniffOutRatsScoreIsSandbag(vk, typeshit, lastKnownGoodScore, score) {
+				if sniffOutRatsScoreIsSandbag(vk, tenantID, typeshit, lastKnownGoodScore, score) {
 					scoreAtFloor = true
 				}
 			}
@@ -98,7 +98,7 @@ func GetStinkyRats(db *sql.DB, vk *valkey.Client, characters []model.Characters,
 				}
 			}
 
-			if sniffOutRatsScoreIsSandbag(vk, typeshit, lastKnownGoodScore, score) {
+			if sniffOutRatsScoreIsSandbag(vk, tenantID, typeshit, lastKnownGoodScore, score) {
 				sandbaggedScores++
 				if !scoreAtFloor {
 					scoreAtFloor = true
@@ -137,9 +137,9 @@ func GetStinkyRats(db *sql.DB, vk *valkey.Client, characters []model.Characters,
 	return
 }
 
-func sniffOutRatsScoreIsSandbag(vk *valkey.Client, typeshit string, pbScore int64, score int64) bool {
+func sniffOutRatsScoreIsSandbag(vk *valkey.Client, tenantID string, typeshit string, pbScore int64, score int64) bool {
 	if typeshit == "zero" {
 		return score == int64(0)
 	}
-	return score < GetSandbagThresholdScore(vk, pbScore)
+	return score < GetSandbagThresholdScore(vk, tenantID, pbScore)
 }

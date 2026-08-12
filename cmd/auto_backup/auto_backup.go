@@ -32,12 +32,12 @@ func startBackup(s *discordgo.Session, stopChan chan struct{}) {
 		panic(err)
 	}
 
-	_, err = s.ChannelMessageSendComplex(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), &discordgo.MessageSend{
+	_, err = s.ChannelMessageSendComplex(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.For(data.PrimaryGuildID()).GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), &discordgo.MessageSend{
 		Content: "Automatic PostgreSQL Database backup " + time.Now().Format(time.DateOnly),
 		Files:   []*discordgo.File{{Name: "dump_" + time.Now().Format(time.DateOnly) + ".sql", Reader: strings.NewReader(stdout.String())}},
 	})
 	if err != nil {
-		s.ChannelMessageSend(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), "Failed to backup PostgreSQL database")
+		s.ChannelMessageSend(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.For(data.PrimaryGuildID()).GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), "Failed to backup PostgreSQL database")
 		log.Println(err)
 	}
 
@@ -52,13 +52,13 @@ func startBackup(s *discordgo.Session, stopChan chan struct{}) {
 	}
 	defer f.Close()
 
-	_, err = s.ChannelMessageSendComplex(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), &discordgo.MessageSend{
+	_, err = s.ChannelMessageSendComplex(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.For(data.PrimaryGuildID()).GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), &discordgo.MessageSend{
 		Content: "Automatic Valkey Database backup " + time.Now().Format(time.DateOnly),
 		Files:   []*discordgo.File{{Name: "dump_" + time.Now().Format(time.DateOnly) + ".rdb", Reader: f}},
 	})
 
 	if err != nil {
-		s.ChannelMessageSend(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), "Failed to backup Valkey database")
+		s.ChannelMessageSend(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.For(data.PrimaryGuildID()).GetWithDefault(apiredis.RedisDB, os.Getenv("DISCORD_REMINDER_CHANNEL_ID")), "Failed to backup Valkey database")
 		log.Println(err)
 	}
 

@@ -20,6 +20,7 @@ type charactersTable struct {
 	ID                 postgres.ColumnInteger
 	MapleCharacterName postgres.ColumnString
 	DiscordUserID      postgres.ColumnString
+	GuildID            postgres.ColumnString
 
 	AllColumns     postgres.ColumnList
 	MutableColumns postgres.ColumnList
@@ -64,9 +65,10 @@ func newCharactersTableImpl(schemaName, tableName, alias string) charactersTable
 		IDColumn                 = postgres.IntegerColumn("id")
 		MapleCharacterNameColumn = postgres.StringColumn("maple_character_name")
 		DiscordUserIDColumn      = postgres.StringColumn("discord_user_id")
-		allColumns               = postgres.ColumnList{IDColumn, MapleCharacterNameColumn, DiscordUserIDColumn}
-		mutableColumns           = postgres.ColumnList{MapleCharacterNameColumn, DiscordUserIDColumn}
-		defaultColumns           = postgres.ColumnList{IDColumn}
+		GuildIDColumn            = postgres.StringColumn("guild_id")
+		allColumns               = postgres.ColumnList{IDColumn, MapleCharacterNameColumn, DiscordUserIDColumn, GuildIDColumn}
+		mutableColumns           = postgres.ColumnList{MapleCharacterNameColumn, DiscordUserIDColumn, GuildIDColumn}
+		defaultColumns           = postgres.ColumnList{IDColumn, GuildIDColumn}
 	)
 
 	return charactersTable{
@@ -76,6 +78,7 @@ func newCharactersTableImpl(schemaName, tableName, alias string) charactersTable
 		ID:                 IDColumn,
 		MapleCharacterName: MapleCharacterNameColumn,
 		DiscordUserID:      DiscordUserIDColumn,
+		GuildID:            GuildIDColumn,
 
 		AllColumns:     allColumns,
 		MutableColumns: mutableColumns,
