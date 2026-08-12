@@ -15,7 +15,7 @@ import (
 	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
 )
 
-func ExportCharactersData(db *sql.DB, vk *valkey.Client, weeks int, asOf time.Time) ([]struct {
+func ExportCharactersData(db *sql.DB, vk *valkey.Client, tenantID string, weeks int, asOf time.Time) ([]struct {
 	Name   string
 	Scores []struct {
 		Date  string
@@ -49,7 +49,7 @@ func ExportCharactersData(db *sql.DB, vk *valkey.Client, weeks int, asOf time.Ti
 
 	// Fetch all characters for the latest week
 
-	rows, err := db.Query("SELECT character_id FROM character_culvert_scores WHERE culvert_date = $1", asOf.Format(time.DateOnly))
+	rows, err := db.Query("SELECT s.character_id FROM character_culvert_scores s JOIN characters c ON c.id = s.character_id WHERE c.guild_id = $1 AND s.culvert_date = $2", tenantID, asOf.Format(time.DateOnly))
 	if err != nil {
 		return retVal, err
 	}
@@ -130,7 +130,7 @@ func ExportCharactersData(db *sql.DB, vk *valkey.Client, weeks int, asOf time.Ti
 				})
 			}
 		}
-		stats, err := cmdhelpers.GetCharacterStatistics(db, vk, name, asOf.Format(time.DateOnly), mdata.Scores)
+		stats, err := cmdhelpers.GetCharacterStatistics(db, vk, tenantID, name, asOf.Format(time.DateOnly), mdata.Scores)
 		if err != nil {
 			panic(err)
 		}

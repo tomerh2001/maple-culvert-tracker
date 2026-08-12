@@ -55,9 +55,16 @@ func (MapleController) POSTCulvert(c *gin.Context) {
 	}
 
 	if len(changedIDs) > 0 {
+		// Tenant: the JWT's discord_server_id claim when present (mapped
+		// through the tenant model), else the default tenant. This internal
+		// API predates tenancy and only the home deployment holds tokens.
+		tenant := data.TenantID(c.GetString("discord_server_id"))
+		if tenant == "" {
+			tenant = data.PrimaryGuildID()
+		}
 		// Fire-and-forget: the HTTP path has no receipt to attach status to.
 		go func() {
-			if err := helpers.AnnounceSubmission(DiscordSession, db.DB, apiredis.RedisDB, thisWeek, changedIDs); err != nil {
+			if err := helpers.AnnounceSubmission(DiscordSession, db.DB, apiredis.RedisDB, tenant, thisWeek, changedIDs); err != nil {
 				log.Println("POSTCulvert: weekly announcement:", err)
 			}
 		}()

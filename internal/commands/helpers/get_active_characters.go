@@ -60,35 +60,36 @@ func FilterCharactersByMembers(chars []model.Characters, memberIDs map[string]bo
 	return out
 }
 
-// GetActiveCharacters returns the tracked roster; see
+// GetActiveCharacters returns the tenant's tracked roster; see
 // GetActiveCharactersWithMeta for the rules.
-func GetActiveCharacters(r *redis.Client, db *sql.DB) (*[]model.Characters, error) {
-	chars, _, err := GetActiveCharactersWithMeta(r, db)
+func GetActiveCharacters(r *redis.Client, db *sql.DB, tenantID string) (*[]model.Characters, error) {
+	chars, _, err := GetActiveCharactersWithMeta(r, db, tenantID)
 	return chars, err
 }
 
-// GetActiveCharactersWithMeta returns the tracked roster and how it was
-// computed. The database is canonical: the base set is every character not
-// explicitly untracked (discord_user_id != '1'; '2' = unlinked-but-tracked is
-// included). Role filtering is an OPTIONAL narrowing applied only when guild
-// role ids are configured AND the Discord member cache exists and parses;
-// an empty role config or a missing/unparseable cache means NO filtering.
-func GetActiveCharactersWithMeta(r *redis.Client, db *sql.DB) (*[]model.Characters, RosterMeta, error) {
+// GetActiveCharactersWithMeta returns the tenant's tracked roster and how it
+// was computed. The database is canonical: the base set is every character of
+// the tenant not explicitly untracked (discord_user_id != '1'; '2' =
+// unlinked-but-tracked is included). Role filtering is an OPTIONAL narrowing
+// applied only when the tenant has guild role ids configured AND its Discord
+// member cache exists and parses; an empty role config or a
+// missing/unparseable cache means NO filtering.
+func GetActiveCharactersWithMeta(r *redis.Client, db *sql.DB, tenantID string) (*[]model.Characters, RosterMeta, error) {
 	// Keep the member cache reasonably fresh for the filtering below (no-op
 	// without a bot session; failures fall back to the existing cache state).
-	maybeRefreshMemberCache()
+	maybeRefreshMemberCache(tenantID)
 
 	meta := RosterMeta{}
 	stmt := SELECT(Characters.AllColumns).FROM(
 		Characters,
-	).WHERE(Characters.DiscordUserID.NOT_EQ(String("1"))).ORDER_BY(Characters.MapleCharacterName)
+	).WHERE(Characters.DiscordUserID.NOT_EQ(String("1")).AND(Characters.GuildID.EQ(String(tenantID)))).ORDER_BY(Characters.MapleCharacterName)
 	chars := []model.Characters{}
 	if err := stmt.Query(db, &chars); err != nil {
 		return nil, meta, err
 	}
 
-	meta.FilterConfigured = strings.TrimSpace(apiredis.CONF_DISCORD_GUILD_ROLE_IDS.GetWithDefault(r, "")) != ""
-	if ts := apiredis.DATA_DISCORD_MEMBERS_UPDATED_AT.GetWithDefault(r, ""); ts != "" {
+	meta.FilterConfigured = strings.TrimSpace(apiredis.CONF_DISCORD_GUILD_ROLE_IDS.For(tenantID).GetWithDefault(r, "")) != ""
+	if ts := apiredis.DATA_DISCORD_MEMBERS_UPDATED_AT.For(tenantID).GetWithDefault(r, ""); ts != "" {
 		if t, err := time.Parse(time.RFC3339, ts); err == nil {
 			meta.CacheAgeKnown = true
 			meta.CacheAge = time.Since(t)
@@ -96,7 +97,7 @@ func GetActiveCharactersWithMeta(r *redis.Client, db *sql.DB) (*[]model.Characte
 	}
 
 	members := []data.WebGuildMember{}
-	if raw, err := apiredis.DATA_DISCORD_MEMBERS.Get(r); err == nil {
+	if raw, err := apiredis.DATA_DISCORD_MEMBERS.For(tenantID).Get(r); err == nil {
 		if jerr := json.Unmarshal([]byte(raw), &members); jerr == nil && len(members) > 0 {
 			meta.CacheAvailable = true
 		}

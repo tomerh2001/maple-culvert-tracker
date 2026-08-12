@@ -34,6 +34,7 @@ var userMentionRe = regexp.MustCompile(`^<@!?(\d+)>$`)
 // weeks; either side may be omitted.
 func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, false)
+	tenant := tenantOf(i)
 
 	nameArg := ""
 	fromStr := ""
@@ -91,11 +92,11 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	// Resolve the character: the member's registered characters, or a tracked
-	// character by name.
-	sql := `SELECT id, maple_character_name FROM characters WHERE characters.discord_user_id = $1 ORDER BY id`
+	// Resolve the character within the tenant: the member's registered
+	// characters, or a tracked character by name.
+	sql := `SELECT id, maple_character_name FROM characters WHERE characters.guild_id = $1 AND characters.discord_user_id = $2 ORDER BY id`
 	if byName {
-		sql = `SELECT id, maple_character_name FROM characters WHERE characters.discord_user_id != '1' ORDER BY maple_character_name`
+		sql = `SELECT id, maple_character_name FROM characters WHERE characters.guild_id = $1 AND characters.discord_user_id != '1' ORDER BY maple_character_name`
 	}
 	stmt, err := db.DB.Prepare(sql)
 	if err != nil {
@@ -103,7 +104,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		r.Edit("Something went wrong querying the database.")
 		return
 	}
-	args := []any{}
+	args := []any{tenant}
 	if !byName {
 		args = append(args, targetUserID)
 	}
@@ -216,7 +217,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	statistics, _ := cmdhelpers.GetCharacterStatistics(db.DB, apiredis.RedisDB, matchedName, toKey, chartData)
+	statistics, _ := cmdhelpers.GetCharacterStatistics(db.DB, apiredis.RedisDB, tenant, matchedName, toKey, chartData)
 	// Statistics are decorative: a nil value only hides the extra fields.
 
 	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker?y-axis-start-at-0=false", "application/json", bytes.NewBuffer(jsonData))
@@ -225,5 +226,5 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	defer resp.Body.Close()
-	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, matchedName, toKey, statistics))
+	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, tenant, matchedName, toKey, statistics))
 }

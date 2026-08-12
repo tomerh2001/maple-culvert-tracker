@@ -86,8 +86,8 @@ func canonicalizeName(name string, lookup func(string) (string, bool)) (canonica
 // rankingsLookup builds a per-submission cached lookup against the official
 // MapleStory rankings. Lookup failures (API down, not found) are non-fatal
 // and simply report ok=false.
-func rankingsLookup() func(string) (string, bool) {
-	region := apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, "na")
+func rankingsLookup(tenantID string) func(string) (string, bool) {
+	region := apiredis.OPTIONAL_CONF_MAPLE_REGION.For(tenantID).GetWithDefault(apiredis.RedisDB, "na")
 	type cached struct {
 		name string
 		ok   bool

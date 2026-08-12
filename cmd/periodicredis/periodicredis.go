@@ -28,15 +28,19 @@ func main() {
 		log.Fatalln("Cannot open discord session", err)
 	}
 	defer s.Close()
-	// Backstop refresher: the bot process refreshes the member cache itself
-	// (on Ready and lazily); this keeps the cache warm even when the bot is
-	// wedged.
+	// Backstop refresher: the bot process refreshes member caches itself (on
+	// Ready and lazily); this keeps every tenant's cache warm even when the
+	// bot is wedged. Tenants come from the bot-maintained DATA_ACTIVE_GUILDS
+	// registry (falling back to the env guild list when it is empty), so
+	// freshly-added servers are covered without a redeploy.
 	go func() {
 		for {
-			if err := helpers.RefreshMemberCache(s); err != nil {
-				log.Println("Failed to fetch members periodically:", err)
-			} else {
-				log.Println("Set", apiredis.DATA_DISCORD_MEMBERS.Name)
+			for _, tenant := range helpers.ActiveTenants(apiredis.RedisDB) {
+				if err := helpers.RefreshMemberCache(s, tenant); err != nil {
+					log.Println("Failed to fetch members periodically for tenant", tenant, ":", err)
+				} else {
+					log.Println("Set", apiredis.DATA_DISCORD_MEMBERS.Name, "for tenant", tenant)
+				}
 			}
 			time.Sleep(time.Minute * 30)
 		}

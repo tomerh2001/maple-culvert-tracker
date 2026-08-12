@@ -16,7 +16,7 @@ func healthCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	r := deferReply(s, i, true)
 
-	results := helpers.RunHealthChecks(s)
+	results := helpers.RunHealthChecks(s, tenantOf(i))
 	pass, warn, fail := 0, 0, 0
 	for _, c := range results {
 		switch c.Status {

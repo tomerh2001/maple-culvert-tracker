@@ -15,18 +15,18 @@ import (
 	"github.com/valkey-io/valkey-go"
 )
 
-func GetCharacterStatistics(db *sql.DB, vk *valkey.Client, characterName string, date string, chartData []data.ChartMakerPoints) (*data.CharacterStatistics, error) {
+func GetCharacterStatistics(db *sql.DB, vk *valkey.Client, tenantID string, characterName string, date string, chartData []data.ChartMakerPoints) (*data.CharacterStatistics, error) {
 	r := data.CharacterStatistics{}
 	dateRaw, err := time.Parse(time.DateOnly, date)
 	if err != nil {
-		dateRaw, err = GetLatestResetDate(db)
+		dateRaw, err = GetLatestResetDate(db, tenantID)
 		if err != nil {
 			log.Println(err)
 			return nil, err
 		}
 	}
 
-	whereClause := LOWER(String(characterName)).EQ(LOWER(Characters.MapleCharacterName)).AND(CharacterCulvertScores.CulvertDate.LT_EQ(DateT(dateRaw)))
+	whereClause := LOWER(String(characterName)).EQ(LOWER(Characters.MapleCharacterName)).AND(Characters.GuildID.EQ(String(tenantID))).AND(CharacterCulvertScores.CulvertDate.LT_EQ(DateT(dateRaw)))
 	if dateRaw.After(data.Date2mPatch) || dateRaw.Equal(data.Date2mPatch) {
 		whereClause = whereClause.AND(CharacterCulvertScores.CulvertDate.GT_EQ(DateT(data.Date2mPatch)))
 	}
@@ -48,7 +48,7 @@ func GetCharacterStatistics(db *sql.DB, vk *valkey.Client, characterName string,
 		Placement int32 `sql:"placement"`
 	}{}
 	if chartData[len(chartData)-1].Score != 0 {
-		stmt = SELECT(COUNT(CharacterCulvertScores.Score).AS("placement")).FROM(CharacterCulvertScores.INNER_JOIN(Characters, Characters.ID.EQ(CharacterCulvertScores.CharacterID))).WHERE(CharacterCulvertScores.Score.GT_EQ(Int32(int32(chartData[len(chartData)-1].Score))).AND(CharacterCulvertScores.CulvertDate.EQ(DateT(dateRaw))))
+		stmt = SELECT(COUNT(CharacterCulvertScores.Score).AS("placement")).FROM(CharacterCulvertScores.INNER_JOIN(Characters, Characters.ID.EQ(CharacterCulvertScores.CharacterID))).WHERE(CharacterCulvertScores.Score.GT_EQ(Int32(int32(chartData[len(chartData)-1].Score))).AND(Characters.GuildID.EQ(String(tenantID))).AND(CharacterCulvertScores.CulvertDate.EQ(DateT(dateRaw))))
 
 		err = stmt.Query(db, &p)
 		if err != nil {
@@ -89,7 +89,7 @@ func GetCharacterStatistics(db *sql.DB, vk *valkey.Client, characterName string,
 				continue
 			}
 		}
-		threshold := GetSandbagThresholdScore(vk, lastKnownGoodScore)
+		threshold := GetSandbagThresholdScore(vk, tenantID, lastKnownGoodScore)
 		if int64(v.Score) < threshold {
 			validCount -= 1
 		}

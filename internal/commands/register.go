@@ -15,6 +15,7 @@ import (
 // your own by default, or someone else's via user:@member (submitters only).
 func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, true)
+	tenant := tenantOf(i)
 
 	characterName := ""
 	callerID := i.Member.User.ID
@@ -44,7 +45,7 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// The check is ADVISORY: a lookup failure or miss never blocks
 	// registration, it only adds a warning to the receipt.
 	warning := ""
-	charData, err := helpers.FetchCharacterData(characterName, apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, "na"))
+	charData, err := helpers.FetchCharacterData(characterName, apiredis.OPTIONAL_CONF_MAPLE_REGION.For(tenant).GetWithDefault(apiredis.RedisDB, "na"))
 	if err != nil || charData == nil {
 		warning = "\n:warning: I couldn't verify `" + characterName + "` against the official rankings - double-check the spelling (`/unregister` + `/register` fixes typos)."
 	} else {
@@ -59,13 +60,13 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	var existingID int64
 	var existingOwner string
 	err = db.DB.QueryRow(
-		`SELECT id, discord_user_id FROM characters WHERE LOWER(maple_character_name) = LOWER($1)`,
-		characterName).Scan(&existingID, &existingOwner)
+		`SELECT id, discord_user_id FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND guild_id = $2`,
+		characterName, tenant).Scan(&existingID, &existingOwner)
 	switch {
 	case err == sql.ErrNoRows:
 		if _, err := db.DB.Exec(
-			`INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, $2)`,
-			characterName, targetID); err != nil {
+			`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, $2, $3)`,
+			characterName, targetID, tenant); err != nil {
 			log.Println("register: insert failed:", err)
 			r.Edit("Something went wrong saving the character. Please try again later.")
 			return
@@ -103,6 +104,7 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 // always kept (rows keep their scores; discord_user_id becomes '1').
 func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, true)
+	tenant := tenantOf(i)
 
 	name := ""
 	callerID := i.Member.User.ID
@@ -125,8 +127,8 @@ func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		var charID int64
 		var owner, realName string
 		err := db.DB.QueryRow(
-			`SELECT id, discord_user_id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND discord_user_id != '1'`,
-			name).Scan(&charID, &owner, &realName)
+			`SELECT id, discord_user_id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND discord_user_id != '1' AND guild_id = $2`,
+			name, tenant).Scan(&charID, &owner, &realName)
 		if err == sql.ErrNoRows {
 			r.Edit("No tracked character named `" + name + "` found - nothing to do.")
 			return
@@ -155,7 +157,7 @@ func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	rows, err := db.DB.Query(
-		`SELECT maple_character_name FROM characters WHERE discord_user_id = $1 ORDER BY maple_character_name`, targetID)
+		`SELECT maple_character_name FROM characters WHERE discord_user_id = $1 AND guild_id = $2 ORDER BY maple_character_name`, targetID, tenant)
 	if err != nil {
 		log.Println("unregister: list failed:", err)
 		r.Edit("Something went wrong. Please try again later.")
@@ -178,7 +180,7 @@ func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		r.Edit("No characters are registered to " + who + " - nothing to do.")
 		return
 	}
-	if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '1' WHERE discord_user_id = $1`, targetID); err != nil {
+	if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '1' WHERE discord_user_id = $1 AND guild_id = $2`, targetID, tenant); err != nil {
 		log.Println("unregister: bulk update failed:", err)
 		r.Edit("Something went wrong. Please try again later.")
 		return

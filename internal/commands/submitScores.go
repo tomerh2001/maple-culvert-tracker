@@ -35,10 +35,11 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		r.Edit("Nothing was parsed from that input - no changes were made.")
 		return
 	}
+	tenant := tenantOf(i)
 	weekStr := week.Format(time.DateOnly)
 	weekLabel := helpers.FormatWeekLabel(week, time.Now())
 
-	characters, rosterMeta, err := helpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB)
+	characters, rosterMeta, err := helpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB, tenant)
 	if err != nil {
 		log.Println("submitScores: Error querying active characters:", err)
 		r.Edit("Internal server error while querying active characters. Please try again later.")
@@ -81,11 +82,11 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 	// planning: exact hits adopt the rankings spelling, l/I bar mixups may
 	// resolve onto an already-tracked character, and unresolved names keep
 	// their decode with a "spelling unverified" receipt note.
-	unverified := canonicalizeSubmitted(submitted, tracked)
+	unverified := canonicalizeSubmitted(tenant, submitted, tracked)
 
 	plan := planSubmission(tracked, submitted, false)
 
-	pendingKey := apiredis.PendingOverwriteKey(i.Member.User.ID, targetMessageID, weekStr)
+	pendingKey := apiredis.PendingOverwriteKey(i.Member.User.ID, targetMessageID, weekStr).For(tenant)
 	pendingMatch := pendingKey.GetWithDefault(apiredis.RedisDB, "") != ""
 	overwrite, storePending := overwriteDecision(len(plan.Conflicts) > 0, pendingMatch)
 
@@ -117,7 +118,7 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		for _, e := range plan.AutoTrack {
 			names = append(names, e.Name)
 		}
-		created, ids, err := helpers.TrackCharacters(db.DB, names)
+		created, ids, err := helpers.TrackCharacters(db.DB, tenant, names)
 		if err != nil {
 			log.Println("submitScores: auto-track failed:", err)
 			r.Edit("Score submission failed while tracking new characters - no scores were written. See server logs for details.")
@@ -171,7 +172,7 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		for _, c := range plan.Changes {
 			changedIDs = append(changedIDs, c.CharacterID)
 		}
-		receipt += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, changedIDs))
+		receipt += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, tenant, week, changedIDs))
 	}
 	receipt += parseWarnings
 	receipt += rosterMeta.StalenessWarning()
@@ -183,8 +184,8 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 // character: rankings-verified spellings replace the decode (possibly folding
 // onto a tracked character), unresolved names stay and are returned as the
 // unverified list. One rankings cache serves the whole submission.
-func canonicalizeSubmitted(submitted map[string]int, tracked []trackedScore) []string {
-	return canonicalizeSubmittedWith(submitted, tracked, rankingsLookup())
+func canonicalizeSubmitted(tenantID string, submitted map[string]int, tracked []trackedScore) []string {
+	return canonicalizeSubmittedWith(submitted, tracked, rankingsLookup(tenantID))
 }
 
 // canonicalizeSubmittedWith is the lookup-injected core (unit-tested with a

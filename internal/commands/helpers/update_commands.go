@@ -1,7 +1,6 @@
 package helpers
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -11,19 +10,29 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
-// UpdateCommands updates the slash commands in every served guild.
-//
-// It will update or create new commands, and delete any remaining commands.
-// The commands are identified by their name. A failing guild never aborts the
-// others: per-guild errors are accumulated (errors.Join) and returned together.
-// The overall outcome ("ok" or the error string) is recorded in the
-// DATA_COMMAND_REGISTRATION_STATUS redis key for the /health diagnostics.
+// UpdateCommands registers the surface ONCE as GLOBAL application commands
+// (bulk overwrite - creates, updates and deletes in a single call), so every
+// server the bot is invited to gets the commands without any per-guild
+// registration. It then deletes any leftover per-guild registrations in the
+// env-listed guilds (one cleanup pass from the per-guild era, so their users
+// don't see every command twice). The overall outcome ("ok" or the error
+// string) is recorded in the process-global DATA_COMMAND_REGISTRATION_STATUS
+// redis key for the /health diagnostics.
 func UpdateCommands(s *discordgo.Session, commands []*discordgo.ApplicationCommand) error {
+	log.Println("Registering global application commands (bulk overwrite)")
 	var errs []error
-	for _, guildID := range data.AllGuildIDs() {
-		if err := updateGuildCommands(s, guildID, commands); err != nil {
-			log.Printf("UpdateCommands: guild %s failed: %v", guildID, err)
-			errs = append(errs, fmt.Errorf("guild %s: %w", guildID, err))
+	if _, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", commands); err != nil {
+		log.Println("UpdateCommands: global bulk overwrite failed:", err)
+		errs = append(errs, fmt.Errorf("global registration: %w", err))
+	} else {
+		log.Printf("UpdateCommands: registered %d global commands", len(commands))
+		// Only clean up per-guild duplicates once the global set is in place,
+		// so a transient failure never leaves servers with NO commands.
+		for _, guildID := range data.AllGuildIDs() {
+			if err := deleteGuildCommands(s, guildID); err != nil {
+				log.Printf("UpdateCommands: guild %s cleanup failed: %v", guildID, err)
+				errs = append(errs, fmt.Errorf("guild %s cleanup: %w", guildID, err))
+			}
 		}
 	}
 	err := errors.Join(errs...)
@@ -31,75 +40,25 @@ func UpdateCommands(s *discordgo.Session, commands []*discordgo.ApplicationComma
 	if err != nil {
 		status = err.Error()
 	}
-	if serr := apiredis.DATA_COMMAND_REGISTRATION_STATUS.Set(apiredis.RedisDB, status); serr != nil {
+	if serr := apiredis.DATA_COMMAND_REGISTRATION_STATUS.Global().Set(apiredis.RedisDB, status); serr != nil {
 		log.Println("UpdateCommands: recording registration status failed:", serr)
 	}
 	return err
 }
 
-func updateGuildCommands(s *discordgo.Session, guildID string, commands []*discordgo.ApplicationCommand) error {
-	log.Println("Updating Application slash commands for guild", guildID)
+// deleteGuildCommands removes every guild-scoped command registration from
+// one guild (the pre-global scheme registered the full surface per guild;
+// with global commands in place they would render as duplicates).
+func deleteGuildCommands(s *discordgo.Session, guildID string) error {
 	cmds, err := s.ApplicationCommands(s.State.User.ID, guildID)
 	if err != nil {
-		return fmt.Errorf("listing registered commands: %w", err)
+		return fmt.Errorf("listing guild commands: %w", err)
 	}
-	m := map[string]*discordgo.ApplicationCommand{}
 	for _, v := range cmds {
-		m[v.Name] = v
-	}
-
-	for _, appCommand := range commands {
-		if existingCommand, ok := m[appCommand.Name]; ok {
-			// Update if options are different. A remote command with EXTRA
-			// options (removed from the definition) must sync too, so a
-			// count mismatch alone forces the update.
-			needUpdate := len(existingCommand.Options) != len(appCommand.Options) ||
-				existingCommand.Description != appCommand.Description
-			o := map[string]*discordgo.ApplicationCommandOption{}
-			for _, existingOption := range existingCommand.Options {
-				o[existingOption.Name] = existingOption
-			}
-			for _, appCommandOption := range appCommand.Options {
-				if needUpdate {
-					break
-				}
-				rawCmdOptions, err := json.Marshal(appCommandOption)
-				if err != nil {
-					return err
-				}
-				rawNewCmdOptions, err := json.Marshal(o[appCommandOption.Name])
-				if err != nil {
-					return err
-				}
-				if string(rawCmdOptions) != string(rawNewCmdOptions) {
-					needUpdate = true
-					break
-				}
-			}
-			if needUpdate {
-				_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, appCommand)
-				if err != nil {
-					return fmt.Errorf("updating command %q: %w", appCommand.Name, err)
-				}
-				log.Println("Updated command " + appCommand.Name)
-			}
-		} else {
-			// Create command
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, appCommand)
-			if err != nil {
-				return fmt.Errorf("creating command %q: %w", appCommand.Name, err)
-			}
-			log.Println("Added new command " + appCommand.Name)
+		if err := s.ApplicationCommandDelete(s.State.User.ID, guildID, v.ID); err != nil {
+			return fmt.Errorf("deleting guild command %q: %w", v.Name, err)
 		}
-		delete(m, appCommand.Name)
+		log.Printf("UpdateCommands: deleted per-guild command %q from guild %s", v.Name, guildID)
 	}
-	for _, v := range m {
-		// delete remainder
-		err := s.ApplicationCommandDelete(s.State.User.ID, guildID, v.ID)
-		if err != nil {
-			return fmt.Errorf("deleting stale command %q: %w", v.Name, err)
-		}
-	}
-
 	return nil
 }

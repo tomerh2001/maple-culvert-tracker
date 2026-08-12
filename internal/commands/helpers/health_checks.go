@@ -32,22 +32,26 @@ type CheckResult struct {
 	Fix    string
 }
 
-// RunHealthChecks probes everything the bot needs to work: infrastructure
-// (postgres, redis), Discord access (guilds, the Server Members intent, the
-// weekly channel's permissions) and configuration (roster roles, submitters,
-// command registration). It never mutates state and is safe to call from any
-// goroutine holding a Ready session.
-func RunHealthChecks(s *discordgo.Session) []CheckResult {
+// RunHealthChecks probes everything the bot needs to work FOR ONE TENANT:
+// infrastructure (postgres, redis - shared), Discord access (the tenant's
+// guilds, the Server Members intent, the weekly channel's permissions) and
+// configuration (roster roles, submitters, command registration). Config,
+// roster and channel checks all evaluate the invoking tenant, so a fresh
+// server's admin sees THEIR setup status; for the default tenant the guild
+// checks still cover every env-listed guild (the home deployment). It never
+// mutates state and is safe to call from any goroutine holding a Ready
+// session.
+func RunHealthChecks(s *discordgo.Session, tenantID string) []CheckResult {
 	out := []CheckResult{
 		checkPostgres(),
 		checkRedis(),
-		checkGuildAccess(s),
-		checkMembersIntent(s),
-		checkMemberCache(),
-		checkGuildRoleConfig(s),
+		checkGuildAccess(s, tenantID),
+		checkMembersIntent(s, tenantID),
+		checkMemberCache(tenantID),
+		checkGuildRoleConfig(s, tenantID),
 	}
-	out = append(out, checkWeeklyChannel(s)...)
-	out = append(out, checkSubmitterConfig(), checkCommandRegistration())
+	out = append(out, checkWeeklyChannel(s, tenantID)...)
+	out = append(out, checkSubmitterConfig(tenantID), checkCommandRegistration())
 	return out
 }
 
@@ -84,11 +88,13 @@ func checkRedis() CheckResult {
 	return c
 }
 
-// checkGuildAccess verifies the bot is a member of every served guild.
-func checkGuildAccess(s *discordgo.Session) CheckResult {
+// checkGuildAccess verifies the bot is a member of every guild backing the
+// tenant: all env-listed guilds for the default tenant (the home deployment's
+// env-guild membership check), just the invoking guild otherwise.
+func checkGuildAccess(s *discordgo.Session, tenantID string) CheckResult {
 	c := CheckResult{Name: "Guild access"}
-	guildIDs := data.AllGuildIDs()
-	if len(guildIDs) == 0 {
+	guildIDs := data.TenantGuildIDs(tenantID)
+	if len(guildIDs) == 0 || (len(guildIDs) == 1 && guildIDs[0] == "") {
 		c.Status, c.Detail = CheckFail, "no guild ids configured"
 		c.Fix = "Set DISCORD_GUILD_ID (and optionally DISCORD_EXTRA_GUILD_IDS)"
 		return c
@@ -113,11 +119,11 @@ func checkGuildAccess(s *discordgo.Session) CheckResult {
 }
 
 // checkMembersIntent verifies the privileged Server Members intent by asking
-// for a single member of the primary guild.
-func checkMembersIntent(s *discordgo.Session) CheckResult {
+// for a single member of the tenant's first guild.
+func checkMembersIntent(s *discordgo.Session, tenantID string) CheckResult {
 	c := CheckResult{Name: "Server Members intent"}
-	guildIDs := data.AllGuildIDs()
-	if len(guildIDs) == 0 {
+	guildIDs := data.TenantGuildIDs(tenantID)
+	if len(guildIDs) == 0 || guildIDs[0] == "" {
 		c.Status, c.Detail = CheckWarn, "no guild ids configured, cannot verify"
 		return c
 	}
@@ -136,16 +142,16 @@ func checkMembersIntent(s *discordgo.Session) CheckResult {
 	return c
 }
 
-// checkMemberCache inspects the roster member cache's age and last error.
-func checkMemberCache() CheckResult {
+// checkMemberCache inspects the tenant's member cache age and last error.
+func checkMemberCache(tenantID string) CheckResult {
 	c := CheckResult{Name: "Member cache"}
-	lastErr := apiredis.DATA_DISCORD_MEMBERS_LAST_ERROR.GetWithDefault(apiredis.RedisDB, "")
+	lastErr := apiredis.DATA_DISCORD_MEMBERS_LAST_ERROR.For(tenantID).GetWithDefault(apiredis.RedisDB, "")
 	if lastErr != "" {
 		c.Status, c.Detail = CheckWarn, "last refresh failed: "+lastErr
 		c.Fix = "Check the Server Members intent and the server logs; the cache refreshes on boot and on demand"
 		return c
 	}
-	ts := apiredis.DATA_DISCORD_MEMBERS_UPDATED_AT.GetWithDefault(apiredis.RedisDB, "")
+	ts := apiredis.DATA_DISCORD_MEMBERS_UPDATED_AT.For(tenantID).GetWithDefault(apiredis.RedisDB, "")
 	if ts == "" {
 		c.Status, c.Detail = CheckWarn, "never refreshed (no timestamp recorded)"
 		c.Fix = "Wait for the boot refresh to finish, or check the server logs"
@@ -167,18 +173,18 @@ func checkMemberCache() CheckResult {
 }
 
 // checkGuildRoleConfig verifies every configured roster role id still exists
-// in one of the served guilds. An unset config is a valid state (Wave 3:
+// in one of the tenant's guilds. An unset config is a valid state (Wave 3:
 // roster = all tracked characters).
-func checkGuildRoleConfig(s *discordgo.Session) CheckResult {
+func checkGuildRoleConfig(s *discordgo.Session, tenantID string) CheckResult {
 	c := CheckResult{Name: "Roster roles"}
-	raw := strings.TrimSpace(apiredis.CONF_DISCORD_GUILD_ROLE_IDS.GetWithDefault(apiredis.RedisDB, ""))
+	raw := strings.TrimSpace(apiredis.CONF_DISCORD_GUILD_ROLE_IDS.For(tenantID).GetWithDefault(apiredis.RedisDB, ""))
 	if raw == "" {
 		c.Status, c.Detail = CheckPass, "not set - roster = all tracked characters"
 		return c
 	}
 	known := map[string]bool{}
 	lookupFailed := false
-	for _, gid := range data.AllGuildIDs() {
+	for _, gid := range data.TenantGuildIDs(tenantID) {
 		roles, err := s.GuildRoles(gid)
 		if err != nil {
 			lookupFailed = true
@@ -205,7 +211,7 @@ func checkGuildRoleConfig(s *discordgo.Session) CheckResult {
 		return c
 	case len(missing) > 0:
 		c.Status = CheckFail
-		c.Detail = "configured role id(s) not found in any served guild: " + strings.Join(missing, ", ")
+		c.Detail = "configured role id(s) not found in this server: " + strings.Join(missing, ", ")
 		c.Fix = "Fix or clear them with `/config` (Discord Guild Role IDs) - a deleted role silently narrows the roster"
 		return c
 	}
@@ -229,9 +235,9 @@ var weeklyRequiredPermissions = []struct {
 // checkWeeklyChannel verifies the weekly announcement channel's permissions
 // and this week's announcement thread. Returns 1-2 results depending on what
 // is applicable.
-func checkWeeklyChannel(s *discordgo.Session) []CheckResult {
+func checkWeeklyChannel(s *discordgo.Session, tenantID string) []CheckResult {
 	c := CheckResult{Name: "Weekly channel"}
-	channelID := strings.TrimSpace(apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.GetWithDefault(apiredis.RedisDB, ""))
+	channelID := strings.TrimSpace(apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.For(tenantID).GetWithDefault(apiredis.RedisDB, ""))
 	if channelID == "" {
 		c.Status, c.Detail = CheckWarn, "not set - weekly announcements are disabled"
 		c.Fix = "`/config setting:Discord Weekly Announcement Channel ID channel:#your-channel`"
@@ -262,7 +268,7 @@ func checkWeeklyChannel(s *discordgo.Session) []CheckResult {
 	c.Status, c.Detail = CheckPass, "all required permissions in <#"+channelID+">"
 
 	out := []CheckResult{c}
-	if tc, ok := checkWeeklyThread(); ok {
+	if tc, ok := checkWeeklyThread(tenantID); ok {
 		out = append(out, tc)
 	}
 	return out
@@ -272,7 +278,7 @@ func checkWeeklyChannel(s *discordgo.Session) []CheckResult {
 // but its notes thread was never created. Returns ok=false when there is
 // nothing to report (no announcement yet, or DB unavailable - the postgres
 // check covers that).
-func checkWeeklyThread() (CheckResult, bool) {
+func checkWeeklyThread(tenantID string) (CheckResult, bool) {
 	c := CheckResult{Name: "Weekly thread"}
 	if db.DB == nil {
 		return c, false
@@ -280,7 +286,7 @@ func checkWeeklyThread() (CheckResult, bool) {
 	week := CurrentCulvertWeek(time.Now()).Format(time.DateOnly)
 	var threadID string
 	err := db.DB.QueryRow(
-		`SELECT thread_id FROM weekly_announcements WHERE culvert_date = $1`, week).Scan(&threadID)
+		`SELECT thread_id FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`, tenantID, week).Scan(&threadID)
 	switch {
 	case err == sql.ErrNoRows:
 		return c, false // no announcement this week yet - nothing to check
@@ -299,10 +305,10 @@ func checkWeeklyThread() (CheckResult, bool) {
 // checkSubmitterConfig reports who can submit scores. Admins-only submission
 // is the intended DEFAULT, so an empty submitter config is a PASS (it must
 // never show up in the boot report, which only posts warns/fails).
-func checkSubmitterConfig() CheckResult {
+func checkSubmitterConfig(tenantID string) CheckResult {
 	c := CheckResult{Name: "Submitters"}
-	roles := strings.TrimSpace(apiredis.CONF_DISCORD_SUBMIT_ROLE_IDS.GetWithDefault(apiredis.RedisDB, ""))
-	users := strings.TrimSpace(apiredis.CONF_DISCORD_SUBMIT_USER_IDS.GetWithDefault(apiredis.RedisDB, ""))
+	roles := strings.TrimSpace(apiredis.CONF_DISCORD_SUBMIT_ROLE_IDS.For(tenantID).GetWithDefault(apiredis.RedisDB, ""))
+	users := strings.TrimSpace(apiredis.CONF_DISCORD_SUBMIT_USER_IDS.For(tenantID).GetWithDefault(apiredis.RedisDB, ""))
 	if roles == "" && users == "" {
 		c.Status, c.Detail = CheckPass, "only admins can submit (default); optionally add submitter roles via /config"
 		return c
@@ -314,7 +320,7 @@ func checkSubmitterConfig() CheckResult {
 // checkCommandRegistration surfaces the last UpdateCommands outcome.
 func checkCommandRegistration() CheckResult {
 	c := CheckResult{Name: "Command registration"}
-	status := apiredis.DATA_COMMAND_REGISTRATION_STATUS.GetWithDefault(apiredis.RedisDB, "")
+	status := apiredis.DATA_COMMAND_REGISTRATION_STATUS.Global().GetWithDefault(apiredis.RedisDB, "")
 	switch status {
 	case "ok":
 		c.Status, c.Detail = CheckPass, "last registration succeeded"
@@ -364,11 +370,13 @@ func FilterProblems(results []CheckResult) []CheckResult {
 	return out
 }
 
-// ReportBootHealth runs the health checks after startup, logs every problem,
-// and - only when there ARE problems - posts a summary to the admin channel
-// (CONF_DISCORD_ADMIN_CHANNEL_ID). A healthy boot posts nothing.
+// ReportBootHealth runs the DEFAULT tenant's health checks after startup (the
+// home deployment), logs every problem, and - only when there ARE problems -
+// posts a summary to its admin channel (CONF_DISCORD_ADMIN_CHANNEL_ID). A
+// healthy boot posts nothing, and no other tenant is ever messaged.
 func ReportBootHealth(s *discordgo.Session) {
-	problems := FilterProblems(RunHealthChecks(s))
+	tenant := data.PrimaryGuildID()
+	problems := FilterProblems(RunHealthChecks(s, tenant))
 	if len(problems) == 0 {
 		log.Println("health: all startup checks passed")
 		return
@@ -376,7 +384,7 @@ func ReportBootHealth(s *discordgo.Session) {
 	for _, c := range problems {
 		log.Printf("health: %s: %s - %s", strings.ToUpper(c.Status), c.Name, c.Detail)
 	}
-	adminChannel := strings.TrimSpace(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.GetWithDefault(apiredis.RedisDB, ""))
+	adminChannel := strings.TrimSpace(apiredis.CONF_DISCORD_ADMIN_CHANNEL_ID.For(tenant).GetWithDefault(apiredis.RedisDB, ""))
 	if adminChannel == "" {
 		return
 	}

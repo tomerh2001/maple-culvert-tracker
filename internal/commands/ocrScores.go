@@ -37,14 +37,14 @@ type ocrOutcome struct {
 
 // ocrImagesToScores downloads and OCRs GPQ score images. A non-nil error is
 // safe to display to the user.
-func ocrImagesToScores(imageURLs []string) (*ocrOutcome, error) {
+func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error) {
 	font, err := helpers.LoadGPQFont()
 	if err != nil {
 		log.Println("ocrImagesToScores: failed to load font templates:", err)
 		return nil, errors.New("Internal error loading font templates. Please try again later.")
 	}
 
-	characters, err := helpers.GetActiveCharacters(apiredis.RedisDB, db.DB)
+	characters, err := helpers.GetActiveCharacters(apiredis.RedisDB, db.DB, tenantID)
 	if err != nil {
 		log.Println("ocrImagesToScores: failed to query active characters:", err)
 		return nil, errors.New("Internal error querying active characters. Please try again later.")

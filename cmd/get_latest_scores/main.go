@@ -33,7 +33,7 @@ func main() {
 
 	log.Println("Latest culvert date is", culvertDate.Format(time.DateOnly))
 
-	stmt = SELECT(Characters.MapleCharacterName.AS("name"), CharacterCulvertScores.Score.AS("score")).FROM(Characters.INNER_JOIN(CharacterCulvertScores, Characters.ID.EQ(CharacterCulvertScores.CharacterID))).WHERE(Characters.DiscordUserID.NOT_EQ(String(data.INTERNAL_DISCORD_ID_UNTRACKED)).AND(CharacterCulvertScores.Score.GT(Int(0)).AND(CharacterCulvertScores.CulvertDate.EQ(DateT((culvertDate)))))).ORDER_BY(CharacterCulvertScores.Score.DESC())
+	stmt = SELECT(Characters.MapleCharacterName.AS("name"), CharacterCulvertScores.Score.AS("score")).FROM(Characters.INNER_JOIN(CharacterCulvertScores, Characters.ID.EQ(CharacterCulvertScores.CharacterID))).WHERE(Characters.GuildID.EQ(String(data.PrimaryGuildID())).AND(Characters.DiscordUserID.NOT_EQ(String(data.INTERNAL_DISCORD_ID_UNTRACKED))).AND(CharacterCulvertScores.Score.GT(Int(0)).AND(CharacterCulvertScores.CulvertDate.EQ(DateT((culvertDate)))))).ORDER_BY(CharacterCulvertScores.Score.DESC())
 
 	result := []struct {
 		Name  string

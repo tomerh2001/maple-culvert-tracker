@@ -14,14 +14,20 @@ import (
 // testWeek is any fixed culvert reset day (a Wednesday).
 var testWeek = time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
 
-// insertTestCharacter creates an unlinked-but-tracked character and returns
-// its id.
+// insertTestCharacter creates an unlinked-but-tracked character in
+// testTenantA and returns its id.
 func insertTestCharacter(t *testing.T, dbc *sql.DB, name string) int64 {
+	return insertTestCharacterInTenant(t, dbc, testTenantA, name)
+}
+
+// insertTestCharacterInTenant creates an unlinked-but-tracked character in
+// the given tenant and returns its id.
+func insertTestCharacterInTenant(t *testing.T, dbc *sql.DB, tenantID, name string) int64 {
 	t.Helper()
 	var id int64
 	if err := dbc.QueryRow(
-		`INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, '2') RETURNING id`,
-		name).Scan(&id); err != nil {
+		`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, '2', $2) RETURNING id`,
+		name, tenantID).Scan(&id); err != nil {
 		t.Fatalf("inserting test character %q: %v", name, err)
 	}
 	return id

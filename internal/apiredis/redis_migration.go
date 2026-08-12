@@ -18,7 +18,7 @@ var migrationTable = map[int]func(rdb *redis.Client) error{
 }
 
 func Migrate(rdb *redis.Client) error {
-	v, err := DATA_REDIS_VERSION.Get(rdb)
+	v, err := DATA_REDIS_VERSION.Global().Get(rdb)
 	if err != nil && err != redis.Nil {
 		log.Println("Failed to get redis data version "+DATA_REDIS_VERSION.Name, err)
 		return err
@@ -40,7 +40,7 @@ func Migrate(rdb *redis.Client) error {
 			log.Println("Failed to run Migration from version "+strconv.Itoa(i)+" to "+strconv.Itoa(i+1), err)
 			return err
 		}
-		err = DATA_REDIS_VERSION.Set(rdb, strconv.Itoa(i+1))
+		err = DATA_REDIS_VERSION.Global().Set(rdb, strconv.Itoa(i+1))
 		if err != nil {
 			log.Println("Failed to set redis data version "+DATA_REDIS_VERSION.Name, err)
 			return err

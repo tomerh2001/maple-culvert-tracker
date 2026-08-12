@@ -17,11 +17,28 @@ var (
 	OPTIONAL_CONF_MONTHLY_IMPROVEMENT_THRESHOLD  = redisInternalKey{"OPTIONAL_CONF_MONTHLY_IMPROVEMENT_THRESHOLD", EditableTypeFloat64, false}
 	OPTIONAL_CONF_ALLOW_SELF_REPORT              = redisInternalKey{"OPTIONAL_CONF_ALLOW_SELF_REPORT", EditableTypeBool, false}
 
-	// Internal keys below this line
+	// Internal keys below this line.
+	//
+	// PROCESS-GLOBAL keys (always accessed via .Global(), never .For(tenant)):
+	// DATA_REDIS_VERSION, DATA_DB_VERSION, DATA_FIXES_*,
+	// DATA_COMMAND_REGISTRATION_STATUS and DATA_ACTIVE_GUILDS describe the
+	// deployment itself, not any one server's data. Everything else is
+	// per-tenant.
 	DATA_REDIS_VERSION = redisInternalKey{"DATA_REDIS_VERSION", EditableTypeNone, false}
 	DATA_DB_VERSION    = redisInternalKey{"DATA_DB_VERSION", EditableTypeNone, false}
 
 	DATA_FIXES_SUN_TO_WED = redisInternalKey{"DATA_FIXES_SUN_TO_WED", EditableTypeNone, false}
+	// DATA_FIXES_TENANT_BACKFILL marks the one-shot backfill that stamped all
+	// pre-tenant postgres rows (guild_id = '') with the primary env guild id.
+	DATA_FIXES_TENANT_BACKFILL = redisInternalKey{"DATA_FIXES_TENANT_BACKFILL", EditableTypeNone, false}
+
+	// DATA_ACTIVE_GUILDS is the bot-maintained registry of every guild the
+	// bot is currently in (comma separated ids), written on Ready and on
+	// GuildCreate/GuildDelete. periodicredis and cron jobs iterate it instead
+	// of the env guild list, so freshly-added servers get background
+	// refreshes too. Process-global: it registers guilds, it holds no guild's
+	// data.
+	DATA_ACTIVE_GUILDS = redisInternalKey{"DATA_ACTIVE_GUILDS", EditableTypeNone, false}
 
 	DATA_DISCORD_MEMBERS = redisInternalKey{"DATA_DISCORD_MEMBERS", EditableTypeNone, false}
 	// DATA_DISCORD_MEMBERS_UPDATED_AT holds the RFC3339 time of the last
@@ -39,19 +56,34 @@ var (
 	// DATA_SUBMIT_OVERWRITE_PENDING is the name PREFIX for the
 	// resubmit-to-confirm overwrite flow: when a Submit Scores run hits
 	// conflicting existing scores, a pending-confirmation key scoped to
-	// (submitter user id, target message id, week) is stored with a short TTL;
-	// a second submission matching the key applies with overwrite. Use
-	// PendingOverwriteKey to build the scoped key - the prefix itself is never
-	// read or written.
+	// (tenant via .For(), submitter user id, target message id, week) is
+	// stored with a short TTL; a second submission matching the key applies
+	// with overwrite. Use PendingOverwriteKey to build the scoped key - the
+	// prefix itself is never read or written.
 	DATA_SUBMIT_OVERWRITE_PENDING = redisInternalKey{"DATA_SUBMIT_OVERWRITE_PENDING", EditableTypeNone, false}
+
+	// DATA_RESET_WEEK_PENDING is the name PREFIX for the /reset-week
+	// run-again-to-confirm flow, scoped (tenant via .For(), invoker, week).
+	// Use PendingResetWeekKey.
+	DATA_RESET_WEEK_PENDING = redisInternalKey{"DATA_RESET_WEEK_PENDING", EditableTypeNone, false}
 )
 
 // PendingOverwriteKey returns the internal key holding a pending
-// overwrite confirmation for one (submitter, message, week) triple. Dynamic:
-// deliberately not in KeysMap.
+// overwrite confirmation for one (submitter, message, week) triple; the
+// caller binds the tenant with .For(). Dynamic: deliberately not in KeysMap.
 func PendingOverwriteKey(submitterID, messageID, week string) redisInternalKey {
 	return redisInternalKey{
 		Name:         DATA_SUBMIT_OVERWRITE_PENDING.Name + ":" + submitterID + ":" + messageID + ":" + week,
+		EditableType: EditableTypeNone,
+	}
+}
+
+// PendingResetWeekKey returns the internal key holding a pending /reset-week
+// confirmation for one (invoker, week) pair; the caller binds the tenant with
+// .For(). Dynamic: deliberately not in KeysMap.
+func PendingResetWeekKey(invokerID, week string) redisInternalKey {
+	return redisInternalKey{
+		Name:         DATA_RESET_WEEK_PENDING.Name + ":" + invokerID + ":" + week,
 		EditableType: EditableTypeNone,
 	}
 }
@@ -80,6 +112,8 @@ func init() {
 	KeysMap[DATA_REDIS_VERSION.Name] = DATA_REDIS_VERSION
 	KeysMap[DATA_DB_VERSION.Name] = DATA_DB_VERSION
 	KeysMap[DATA_FIXES_SUN_TO_WED.Name] = DATA_FIXES_SUN_TO_WED
+	KeysMap[DATA_FIXES_TENANT_BACKFILL.Name] = DATA_FIXES_TENANT_BACKFILL
+	KeysMap[DATA_ACTIVE_GUILDS.Name] = DATA_ACTIVE_GUILDS
 	KeysMap[DATA_DISCORD_MEMBERS.Name] = DATA_DISCORD_MEMBERS
 	KeysMap[DATA_DISCORD_MEMBERS_UPDATED_AT.Name] = DATA_DISCORD_MEMBERS_UPDATED_AT
 	KeysMap[DATA_DISCORD_MEMBERS_LAST_ERROR.Name] = DATA_DISCORD_MEMBERS_LAST_ERROR

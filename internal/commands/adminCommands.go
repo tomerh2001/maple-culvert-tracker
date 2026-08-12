@@ -49,6 +49,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	r := deferReply(s, i, true)
+	tenant := tenantOf(i)
 
 	settingName := ""
 	value := ""
@@ -68,7 +69,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		out := "**Bot settings** (set with `/config setting:<name> value:<value>` - `#channel`/`@role` mentions and comma separated id lists work as values)\n"
 		for _, name := range editableSettingKeys() {
 			k := apiredis.KeysMap[name]
-			cur := k.GetWithDefault(apiredis.RedisDB, "")
+			cur := k.For(tenant).GetWithDefault(apiredis.RedisDB, "")
 			display := "_(not set)_"
 			if cur != "" {
 				display = "`" + cur + "`"
@@ -107,7 +108,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	if !valueSet {
-		cur := k.GetWithDefault(apiredis.RedisDB, "")
+		cur := k.For(tenant).GetWithDefault(apiredis.RedisDB, "")
 		hint := ""
 		if desc != nil {
 			hint = "\n" + desc.Description
@@ -165,7 +166,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		value = strings.Join(cleaned, ",")
 	}
 
-	if err := k.Set(apiredis.RedisDB, value); err != nil {
+	if err := k.For(tenant).Set(apiredis.RedisDB, value); err != nil {
 		log.Println("config: set failed:", err)
 		r.Edit("Failed to save the setting. Please try again later.")
 		return
@@ -207,6 +208,7 @@ func setCulvert(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	r := deferReply(s, i, true)
+	tenant := tenantOf(i)
 	name := ""
 	score := -1
 	dateStr := ""
@@ -237,19 +239,19 @@ func setCulvert(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	note := ""
 	var charID int64
 	var realName string
-	err := db.DB.QueryRow(`SELECT id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1)`, name).Scan(&charID, &realName)
+	err := db.DB.QueryRow(`SELECT id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND guild_id = $2`, name, tenant).Scan(&charID, &realName)
 	if err == sql.ErrNoRows {
 		// Unknown name: canonicalize against the rankings, then auto-track.
-		canonical, verified := canonicalizeName(name, rankingsLookup())
+		canonical, verified := canonicalizeName(name, rankingsLookup(tenant))
 		if canonical != name {
 			// The canonical spelling may already be tracked (l/I mixups).
-			err = db.DB.QueryRow(`SELECT id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1)`, canonical).Scan(&charID, &realName)
+			err = db.DB.QueryRow(`SELECT id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND guild_id = $2`, canonical, tenant).Scan(&charID, &realName)
 			if err == nil {
 				note = "\nMatched `" + name + "` to the tracked character `" + realName + "` via the official rankings."
 			}
 		}
 		if charID == 0 {
-			_, ids, terr := helpers.TrackCharacters(db.DB, []string{canonical})
+			_, ids, terr := helpers.TrackCharacters(db.DB, tenant, []string{canonical})
 			if terr != nil {
 				log.Println("set-culvert: auto-track failed:", terr)
 				r.Edit("Something went wrong tracking the character. Please try again later.")
@@ -275,6 +277,6 @@ func setCulvert(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	msg := "Set `" + realName + "` to **" + apihelpers.FormatThousands(score) + "** for " + weekLabel + ". :white_check_mark:" + note
-	msg += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, []int64{charID}))
+	msg += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, tenant, week, []int64{charID}))
 	r.Edit(msg)
 }

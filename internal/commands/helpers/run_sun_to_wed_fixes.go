@@ -13,7 +13,7 @@ import (
 )
 
 func RunSunToWedFixes(db *sql.DB, rdb *redis.Client) error {
-	res, err := apiredis.DATA_FIXES_SUN_TO_WED.Get(rdb)
+	res, err := apiredis.DATA_FIXES_SUN_TO_WED.Global().Get(rdb)
 	if err != nil && err != redis.Nil {
 		log.Println("Failed to get redis val "+apiredis.DATA_FIXES_SUN_TO_WED.ToString(), err)
 		return err
@@ -58,7 +58,7 @@ func RunSunToWedFixes(db *sql.DB, rdb *redis.Client) error {
 	}
 
 	log.Println("RunSunToWedFixes done")
-	err = apiredis.DATA_FIXES_SUN_TO_WED.Set(rdb, "true")
+	err = apiredis.DATA_FIXES_SUN_TO_WED.Global().Set(rdb, "true")
 	if err != nil {
 		log.Println("Failed to set redis val "+apiredis.DATA_FIXES_SUN_TO_WED.ToString(), err)
 		return err

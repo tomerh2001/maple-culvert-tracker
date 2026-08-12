@@ -13,6 +13,8 @@ func EnvVarsTest() {
 	if os.Getenv(data.EnvVarDiscordToken) == "" {
 		log.Fatalln("DISCORD_TOKEN is not set")
 	}
+	// Still required with public installability: it defines the DEFAULT
+	// tenant (the home deployment's data set and legacy redis key prefix).
 	if os.Getenv(data.EnvVarDiscordGuildID) == "" {
 		log.Fatalln("DISCORD_GUILD_ID is not set")
 	}

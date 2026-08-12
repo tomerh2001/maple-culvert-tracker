@@ -63,7 +63,7 @@ func main() {
 	// write all characters to database
 	for _, character := range allCharacters {
 		log.Println("INSERTING", character, "into database")
-		_, err := db.DB.Exec("INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, $2) ON CONFLICT (maple_character_name) DO NOTHING;", character, "2")
+		_, err := db.DB.Exec("INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, $2, $3) ON CONFLICT (guild_id, maple_character_name) DO NOTHING;", character, "2", data.PrimaryGuildID())
 		if err != nil {
 			log.Fatalln(err)
 		}

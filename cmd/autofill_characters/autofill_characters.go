@@ -20,7 +20,7 @@ main parses the discord_nickname from Valkey and automatically INSERT them to th
 It is not recommended to run this on a repeat schedule because it cannot handle name changes, and will easily end up with duplicate names.
 */
 func main() {
-	val, err := apiredis.DATA_DISCORD_MEMBERS.Get(apiredis.RedisDB)
+	val, err := apiredis.DATA_DISCORD_MEMBERS.For(data.PrimaryGuildID()).Get(apiredis.RedisDB)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -51,7 +51,7 @@ func main() {
 			trimmedCharName = strings.Trim(trimmedCharName, " ⭐")
 			log.Println("Onto", trimmedCharName)
 			time.Sleep(time.Second)
-			charData, err := helpers.FetchCharacterData(trimmedCharName, apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, "na"))
+			charData, err := helpers.FetchCharacterData(trimmedCharName, apiredis.OPTIONAL_CONF_MAPLE_REGION.For(data.PrimaryGuildID()).GetWithDefault(apiredis.RedisDB, "na"))
 
 			if err != nil {
 				log.Println("[WARN]", trimmedCharName, "not found in official rankings and will be skipped")
@@ -59,8 +59,9 @@ func main() {
 			}
 			log.Println(charData.CharacterName, "will be inserted")
 
-			// insert with conflict handling
-			rows, err := db.DB.Query("SELECT maple_character_name from characters where maple_character_name = $1", charData.CharacterName)
+			// insert with conflict handling (default tenant: this importer
+			// serves the home deployment)
+			rows, err := db.DB.Query("SELECT maple_character_name from characters where maple_character_name = $1 AND guild_id = $2", charData.CharacterName, data.PrimaryGuildID())
 
 			if err != nil {
 				log.Fatalln(err)
@@ -75,8 +76,8 @@ func main() {
 			rows.Close()
 
 			// DB guaranteed safe to insert
-			log.Println("INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, $2)", charData.CharacterName, m.DiscordUserID)
-			_, err = tx.Exec("INSERT INTO characters (maple_character_name, discord_user_id) VALUES ($1, $2)", charData.CharacterName, m.DiscordUserID)
+			log.Println("INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, $2, $3)", charData.CharacterName, m.DiscordUserID, data.PrimaryGuildID())
+			_, err = tx.Exec("INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, $2, $3)", charData.CharacterName, m.DiscordUserID, data.PrimaryGuildID())
 			if err != nil {
 				log.Fatalln(err)
 				return

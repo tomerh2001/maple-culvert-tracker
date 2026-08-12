@@ -48,6 +48,11 @@ func PreflightTest() {
 
 	// Apply additional fixes
 	log.Println("Applying additional fixes")
+	err = RunTenantBackfill(db.DB, apiredis.RedisDB)
+	if err != nil {
+		log.Println("Failed to RunTenantBackfill")
+		log.Fatal(err)
+	}
 	err = RunSunToWedFixes(db.DB, apiredis.RedisDB)
 	if err != nil {
 		log.Println("Failed to RunSunToWedFixes")
