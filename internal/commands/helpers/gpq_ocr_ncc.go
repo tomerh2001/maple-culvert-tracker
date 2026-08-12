@@ -63,6 +63,12 @@ const (
 // half-pixel steps suffice.
 var gpqGrayPhases = []float64{0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875}
 
+// gpqGrayPhasesChained is the coarser grid the CHAINED template sets use
+// (screenshots magnified from below reference scale): the chain blur widens
+// the correlation peak in phase, so quarter-pixel steps lose nothing while
+// quartering the fine-tier scan and build cost.
+var gpqGrayPhasesChained = []float64{0, 0.25, 0.5, 0.75}
+
 // gpqGrayHalos are the glyph-antialiasing halo strengths templates are
 // generated at. The game's own AA fringe varies with text colour and capture
 // chain (and integer-scale smoothing preserves it crisply), so a single model
@@ -78,6 +84,7 @@ var gpqGrayHalos = []float64{gpqSmoothHalo, 0.5}
 type nccPlane struct {
 	w, h   int
 	lum    []uint8   // row-major luminance
+	lumF   []float32 // the same luminance as float32 (dot-product hot loop)
 	integ  []float64 // (w+1)*(h+1) summed-area table of lum
 	integ2 []float64 // summed-area table of lum²
 	loose  [][]bool  // halo-inclusive neutral ink (row/word segmentation)
@@ -88,7 +95,7 @@ type nccPlane struct {
 func buildNCCPlane(img image.Image, scale float64) *nccPlane {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	p := &nccPlane{w: w, h: h, lum: make([]uint8, w*h)}
+	p := &nccPlane{w: w, h: h, lum: make([]uint8, w*h), lumF: make([]float32, w*h)}
 	loose := make([][]bool, h)
 	for y := 0; y < h; y++ {
 		looseRow := make([]bool, w)
@@ -96,6 +103,7 @@ func buildNCCPlane(img image.Image, scale float64) *nccPlane {
 			r32, g32, b32, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
 			r, g, bl := int(r32>>8), int(g32>>8), int(b32>>8)
 			p.lum[y*w+x] = uint8((r + g + bl) / 3)
+			p.lumF[y*w+x] = float32(p.lum[y*w+x])
 			maxc, minc := r, r
 			if g > maxc {
 				maxc = g
@@ -350,12 +358,26 @@ type grayGlyph struct {
 	varTN      float64   // n·variance = Σv² − (Σv)²/n
 	ink        int       // core pixels >= 0.55 (budget prefilter, DP cost)
 	floor      float64   // acceptance floor override when > font's (rescue templates)
+	coarse     bool      // member of the coarse (half-pixel phase) scan tier
+}
+
+// grayGroup indexes every template variant of one decoded text (all phases,
+// halos, ligature junction offsets), split into the coarse scan tier - the
+// half-pixel phase variants scored first - and the fine remainder, which is
+// only scored when the coarse tier shows the group is in contention (see
+// nccCandidatesAt). minFloor is the lowest acceptance floor any variant of
+// the group can be admitted at.
+type grayGroup struct {
+	coarse   []int
+	fine     []int
+	minFloor float64
 }
 
 // grayFont is a set of gray glyph templates at one UI scale, together with
 // the acceptance floor and cost scale its decodes use (text vs digits).
 type grayFont struct {
 	glyphs    []grayGlyph
+	groups    []grayGroup
 	scale     float64
 	minNCC    float64
 	costScale float64
@@ -369,6 +391,54 @@ type grayFont struct {
 	faintDiv int
 }
 
+// glyphFloor is the acceptance floor variant g is admitted at in this font:
+// the font's floor, raised by rescue-template overrides, and lowered to the
+// text floor for the comma in a digits font (a thousands separator is
+// stripped from the decoded value, so a false comma cannot corrupt a score -
+// but a REJECTED genuine comma becomes skipped ink that trips the
+// dropped-digit guard).
+func (gf *grayFont) glyphFloor(g *grayGlyph) float64 {
+	minNCC := gf.minNCC
+	if g.floor > minNCC {
+		minNCC = g.floor
+	}
+	if g.r == ',' && minNCC > gpqNCCMinText {
+		minNCC = gpqNCCMinText
+	}
+	return minNCC
+}
+
+// buildGroups (re)derives the per-text variant groups from the glyph list.
+func (gf *grayFont) buildGroups() {
+	byText := map[string]int{}
+	gf.groups = nil
+	for i := range gf.glyphs {
+		g := &gf.glyphs[i]
+		gi, ok := byText[g.text]
+		if !ok {
+			gi = len(gf.groups)
+			byText[g.text] = gi
+			gf.groups = append(gf.groups, grayGroup{minFloor: gf.glyphFloor(g)})
+		}
+		grp := &gf.groups[gi]
+		if fl := gf.glyphFloor(g); fl < grp.minFloor {
+			grp.minFloor = fl
+		}
+		if g.coarse {
+			grp.coarse = append(grp.coarse, i)
+		} else {
+			grp.fine = append(grp.fine, i)
+		}
+	}
+	// Every group needs a coarse tier, or it could never come into
+	// contention (defensive: all phase grids include 0).
+	for gi := range gf.groups {
+		if len(gf.groups[gi].coarse) == 0 {
+			gf.groups[gi].coarse, gf.groups[gi].fine = gf.groups[gi].fine, nil
+		}
+	}
+}
+
 // digitsOnly returns a view restricted to digit and comma templates, with the
 // stricter digit acceptance parameters.
 func (gf *grayFont) digitsOnly() *grayFont {
@@ -379,8 +449,13 @@ func (gf *grayFont) digitsOnly() *grayFont {
 			out.glyphs = append(out.glyphs, gf.glyphs[i])
 		}
 	}
+	out.buildGroups()
 	return out
 }
+
+// isCoarsePhase reports whether a sub-pixel phase offset belongs to the
+// coarse scan tier (the half-pixel grid).
+func isCoarsePhase(d float64) bool { return d == 0 || d == 0.5 }
 
 // smoothSampleAt is smoothSample with a configurable halo strength and floor
 // semantics valid for negative coordinates (padding regions sample outside
@@ -407,6 +482,97 @@ func smoothSampleAt(g *gpqGlyph, sx, sy, halo float64) float64 {
 	}
 	return at(x0, y0)*(1-fx)*(1-fy) + at(x0+1, y0)*fx*(1-fy) +
 		at(x0, y0+1)*(1-fx)*fy + at(x0+1, y0+1)*fx*fy
+}
+
+// buildGrayGlyphChained renders one template the way an anchored screenshot
+// BELOW reference scale reaches the decoder: the glyph as the CLIENT shows
+// it - its crisp 2x composition (pre = 2 doubles a 1x bitmap; pre = 1 takes
+// a bitmap already on the composition grid) bilinear-minified to the
+// anchored source scale srcFac with the halo model, at sub-pixel phase
+// dx/dy in source pixels - then bilinear-magnified by up to the reference
+// resolution, the same magnification resampleTableROI applies to the image.
+// Template and content thus carry the same compound blur. Crisp
+// reference-scale templates would not: their sharp strokes correlate the
+// blurred instances of DIFFERENT thin glyphs (t/i/1, rt/i1) almost equally.
+// And rasterizing from the 1x bitmaps would overshoot the blur the other
+// way: the client's downscale keeps thin strokes at full intensity (they
+// are two pixels wide on its 2x grid), which tent-sampling a 1x bitmap
+// dilutes - the same confusions then flip direction (t reading as I).
+func buildGrayGlyphChained(g *gpqGlyph, pre int, srcFac, up, dx, dy, halo float64) grayGlyph {
+	base := g
+	if pre == 2 {
+		base = upscale2x(g)
+	}
+	eff := srcFac / float64(pre) // sampling rate from base's grid
+	// Source-scale field, padded by one 1x pixel of background (the game's
+	// letter spacing) like the direct build.
+	sPadX := scalePx(1, srcFac)
+	sPadY := scalePx(1, srcFac)
+	sCoreW := int(math.Ceil(float64(base.w)*eff - dx))
+	sCoreH := int(math.Ceil(float64(base.h)*eff - dy))
+	if sCoreW < 1 {
+		sCoreW = 1
+	}
+	if sCoreH < 1 {
+		sCoreH = 1
+	}
+	sw := sCoreW + 2*sPadX
+	sh := sCoreH + 2*sPadY
+	src := make([]float64, sw*sh)
+	for y := 0; y < sh; y++ {
+		for x := 0; x < sw; x++ {
+			src[y*sw+x] = smoothSampleAt(base, (float64(x-sPadX)+dx)/eff, (float64(y-sPadY)+dy)/eff, halo)
+		}
+	}
+	srcAt := func(x, y int) float64 {
+		if x < 0 || y < 0 || x >= sw || y >= sh {
+			return 0
+		}
+		return src[y*sw+x]
+	}
+
+	// Reference-resolution geometry; the bilinear magnification aligns the
+	// core origins and maps destination pixel centers into source space,
+	// mirroring resampleTableROI.
+	fac := srcFac * up
+	padX := scalePx(1, fac)
+	padY := scalePx(1, fac)
+	coreW := int(float64(sCoreW)*up + 0.5)
+	coreH := int(float64(sCoreH)*up + 0.5)
+	if coreW < 1 {
+		coreW = 1
+	}
+	if coreH < 1 {
+		coreH = 1
+	}
+	w := coreW + 2*padX
+	h := coreH + 2*padY
+	vals := make([]float32, w*h)
+	ink := 0
+	var sum, sum2 float64
+	for y := 0; y < h; y++ {
+		syf := float64(sPadY) + (float64(y-padY)+0.5)/up - 0.5
+		yb := int(math.Floor(syf))
+		fy := syf - float64(yb)
+		for x := 0; x < w; x++ {
+			sxf := float64(sPadX) + (float64(x-padX)+0.5)/up - 0.5
+			xb := int(math.Floor(sxf))
+			fx := sxf - float64(xb)
+			v := srcAt(xb, yb)*(1-fx)*(1-fy) + srcAt(xb+1, yb)*fx*(1-fy) +
+				srcAt(xb, yb+1)*(1-fx)*fy + srcAt(xb+1, yb+1)*fx*fy
+			vals[y*w+x] = float32(v)
+			sum += v
+			sum2 += v * v
+			if v >= 0.55 && x >= padX && x < padX+coreW && y >= padY && y < padY+coreH {
+				ink++
+			}
+		}
+	}
+	n := float64(w * h)
+	return grayGlyph{
+		r: g.r, text: string(g.r), w: w, h: h, padX: padX, padY: padY, coreW: coreW, coreH: coreH,
+		vals: vals, sumT: sum, varTN: sum2 - sum*sum/n, ink: ink,
+	}
 }
 
 // buildGrayGlyph resamples one binary template to scale fac at sub-pixel
@@ -452,9 +618,12 @@ func buildGrayGlyph(g *gpqGlyph, fac, dx, dy, halo float64) grayGlyph {
 // templates cannot reach the NCC floor against the merged forms, so these
 // sequences get composite templates built from the same 1x bitmaps (bottom
 // aligned, one blank spacing column - the font's letter spacing - filled
-// wherever ink flanks it on both sides).
+// wherever ink flanks it on both sides). "ly" is the crossbar-less member
+// of the family: blur bridges the l's bar into the y's arm, and without a
+// composite that models the bridge WITHOUT a left crossbar, a 't' template
+// wins the merged span ("Gremlynz" decoding as "Gremtynz").
 var gpqLigatures = []string{
-	"ff", "ft", "tf", "tt", "fz", "tz", "fy", "ty",
+	"ff", "ft", "tf", "tt", "fz", "tz", "fy", "ty", "ly",
 	"ffz", "ftz", "tfz", "ttz",
 }
 
@@ -472,6 +641,11 @@ func compositeGlyph(glyphs []*gpqGlyph, offs, descs []int) gpqGlyph {
 	for gi, g := range glyphs {
 		if gi > 0 {
 			x += offs[gi-1]
+		}
+		if x < 0 {
+			// A negative junction offset can outrun a narrow glyph (the l
+			// bar): clamp rather than draw off-grid.
+			x = 0
 		}
 		if a := g.h - descs[gi]; a > above {
 			above = a
@@ -493,6 +667,9 @@ func compositeGlyph(glyphs []*gpqGlyph, offs, descs []int) gpqGlyph {
 	for gi, g := range glyphs {
 		if gi > 0 {
 			x += offs[gi-1]
+		}
+		if x < 0 {
+			x = 0
 		}
 		top := above - (g.h - descs[gi])
 		for y := 0; y < g.h; y++ {
@@ -545,59 +722,71 @@ func upscale2x(g *gpqGlyph) *gpqGlyph {
 	return &gpqGlyph{r: g.r, bits: bits, w: g.w * 2, h: g.h * 2, ink: countInk(bits), cols: countCols(bits)}
 }
 
-// grayScaledFontDigitsLite returns (cached per scale) a REDUCED digit
-// template set: digits and comma only, coarse phases. Digit glyphs are wide
-// and phase-tolerant, and this set exists for the high-resolution score
-// validation pass of large screenshots, where the full set would blow the
-// time budget.
-func (f *GPQFont) grayScaledFontDigitsLite(fac float64) *grayFont {
-	pct := int(fac*100+0.5) + 1_000_000 // separate cache namespace
-	f.grayMu.Lock()
-	defer f.grayMu.Unlock()
-	if f.grayCache == nil {
-		f.grayCache = map[int]*grayFont{}
+// grayRefFontFor returns the reference-resolution gray template set matched
+// to the ANCHORED source scale the table region was resampled from: the
+// direct 2x set when the screenshot was at or above reference resolution
+// (minification preserves - or restores - sharpness), the chain-blurred set
+// (see buildGrayGlyphChained) when it was magnified from below.
+func (f *GPQFont) grayRefFontFor(srcScale float64) *grayFont {
+	if srcScale >= gpqAnchorRefScale-0.005 {
+		return f.grayScaledFont(gpqAnchorRefScale)
 	}
-	if cached := f.grayCache[pct]; cached != nil {
-		return cached
-	}
-	exact := float64(pct-1_000_000) / 100
-	gf := &grayFont{scale: exact, minNCC: gpqNCCMinDigits, costScale: gpqNCCCostDigits}
-	for i := range f.glyphs {
-		r := f.glyphs[i].r
-		if !((r >= '0' && r <= '9') || r == ',') {
-			continue
-		}
-		for _, halo := range gpqGrayHalos {
-			for _, dy := range []float64{0, 0.25, 0.5, 0.75} {
-				for _, dx := range []float64{0, 0.25, 0.5, 0.75} {
-					gf.glyphs = append(gf.glyphs, buildGrayGlyph(&f.glyphs[i], exact, dx, dy, halo))
-				}
-			}
-		}
-	}
-	f.grayCache[pct] = gf
-	return gf
+	return f.grayFontAt(gpqAnchorRefScale, srcScale)
 }
 
 // grayScaledFont returns (building and caching once per scale) the gray
 // template set for the given scale factor. Must be called on the base font.
 func (f *GPQFont) grayScaledFont(fac float64) *grayFont {
+	return f.grayFontAt(fac, 0)
+}
+
+// grayFontAt builds and caches one gray template set: rendered directly at
+// scale fac when srcScale is zero, otherwise rendered at srcScale and
+// bilinear-magnified to fac (the resampleTableROI chain).
+func (f *GPQFont) grayFontAt(fac, srcScale float64) *grayFont {
 	pct := int(fac*100 + 0.5)
+	key := pct
+	srcExact := 0.0
+	if srcScale > 0 {
+		srcPct := int(srcScale*100 + 0.5)
+		srcExact = float64(srcPct) / 100
+		key = 2_000_000 + srcPct // separate cache namespace per source scale
+	}
 	f.grayMu.Lock()
 	defer f.grayMu.Unlock()
 	if f.grayCache == nil {
 		f.grayCache = map[int]*grayFont{}
 	}
-	if cached := f.grayCache[pct]; cached != nil {
+	if cached := f.grayCache[key]; cached != nil {
 		return cached
 	}
 	exact := float64(pct) / 100
+	build := func(g *gpqGlyph, bfac, dx, dy, halo float64) grayGlyph {
+		if srcExact <= 0 {
+			return buildGrayGlyph(g, bfac, dx, dy, halo)
+		}
+		ratio := srcExact / exact
+		// Templates requested at the full font scale come from 1x bitmaps
+		// (pre-doubled onto the client's 2x composition grid); the rescue
+		// composites at half scale are laid out on that grid already.
+		pre := 1
+		if bfac > exact-1e-9 {
+			pre = 2
+		}
+		return buildGrayGlyphChained(g, pre, bfac*ratio, 1/ratio, dx, dy, halo)
+	}
+	phases := gpqGrayPhases
+	if srcExact > 0 {
+		phases = gpqGrayPhasesChained
+	}
 	gf := &grayFont{scale: exact, minNCC: gpqNCCMinText, costScale: gpqNCCCostText, faintDiv: 1}
 	for i := range f.glyphs {
 		for _, halo := range gpqGrayHalos {
-			for _, dy := range gpqGrayPhases {
-				for _, dx := range gpqGrayPhases {
-					gf.glyphs = append(gf.glyphs, buildGrayGlyph(&f.glyphs[i], exact, dx, dy, halo))
+			for _, dy := range phases {
+				for _, dx := range phases {
+					g := build(&f.glyphs[i], exact, dx, dy, halo)
+					g.coarse = isCoarsePhase(dx) && isCoarsePhase(dy)
+					gf.glyphs = append(gf.glyphs, g)
 				}
 			}
 		}
@@ -642,10 +831,11 @@ func (f *GPQFont) grayScaledFont(fac float64) *grayFont {
 		for _, offs := range ligatureOffsets(len(parts)-1, []int{-2, -1, 0, 1}) {
 			comp := compositeGlyph(parts, offs, descs)
 			for _, halo := range gpqGrayHalos {
-				for _, dy := range gpqGrayPhases {
-					for _, dx := range gpqGrayPhases {
-						g := buildGrayGlyph(&comp, exact, dx, dy, halo)
+				for _, dy := range phases {
+					for _, dx := range phases {
+						g := build(&comp, exact, dx, dy, halo)
 						g.text = lig
+						g.coarse = isCoarsePhase(dx) && isCoarsePhase(dy)
 						gf.glyphs = append(gf.glyphs, g)
 					}
 				}
@@ -661,9 +851,10 @@ func (f *GPQFont) grayScaledFont(fac float64) *grayFont {
 				for _, halo := range gpqGrayHalos {
 					for _, dy := range []float64{0, 0.25, 0.5, 0.75} {
 						for _, dx := range []float64{0, 0.25, 0.5, 0.75} {
-							g := buildGrayGlyph(&comp, exact/2, dx, dy, halo)
+							g := build(&comp, exact/2, dx, dy, halo)
 							g.text = lig
 							g.floor = 0.74
+							g.coarse = isCoarsePhase(dx) && isCoarsePhase(dy)
 							gf.glyphs = append(gf.glyphs, g)
 						}
 					}
@@ -671,43 +862,71 @@ func (f *GPQFont) grayScaledFont(fac float64) *grayFont {
 			}
 		}
 	}
-	f.grayCache[pct] = gf
+	gf.buildGroups()
+	f.grayCache[key] = gf
 	return gf
 }
 
 // ── NCC scoring and word decoding ───────────────────────────────────────────
 
 // nccScore correlates template g with the luminance plane, core top-left at
-// (x, y). It also reports what the placed template EXPLAINS within its
-// advance columns: coreExpl counts image core-ink pixels (>= thrCore)
-// covered by template ink (>= 0.2), faintExpl the covered faint-ink weight
-// (luminance above thrMid, capped at thrCore). The caller subtracts these
-// from the window totals: ink the placement leaves stranded - an 'h'
-// ascender above an 'n', an i-dot above a bare stem - is charged like
-// skipped ink, which no ink-count budget can hide. Returns ncc = -1 when
-// the placement is out of bounds or degenerate.
-func nccScore(p *nccPlane, g *grayGlyph, x, y, thrMid, thrCore int) (float64, int, int) {
+// (x, y): the pure dot-product correlation, no accounting - it runs for
+// every (template, y offset) pair, so it must stay a tight loop over the
+// float32 luminance. Returns -1 when the placement is out of bounds or
+// degenerate.
+func nccScore(p *nccPlane, g *grayGlyph, x, y int) float64 {
 	x0 := x - g.padX
 	y0 := y - g.padY
 	if x0 < 0 || y0 < 0 || x0+g.w > p.w || y0+g.h > p.h {
-		return -1, 0, 0
+		return -1
 	}
 	n := float64(g.w * g.h)
 	sp, sp2 := p.rectSums(x0, y0, g.w, g.h)
 	denP := sp2 - sp*sp/n
 	if denP < 1e-6 || g.varTN < 1e-6 {
-		return -1, 0, 0
+		return -1
 	}
 	var stp float64
+	for yy := 0; yy < g.h; yy++ {
+		base := (y0+yy)*p.w + x0
+		trow := g.vals[yy*g.w : (yy+1)*g.w]
+		lrow := p.lumF[base : base+g.w]
+		lrow = lrow[:len(trow)]
+		var acc0, acc1, acc2, acc3 float32
+		i := 0
+		for ; i+3 < len(trow); i += 4 {
+			acc0 += trow[i] * lrow[i]
+			acc1 += trow[i+1] * lrow[i+1]
+			acc2 += trow[i+2] * lrow[i+2]
+			acc3 += trow[i+3] * lrow[i+3]
+		}
+		for ; i < len(trow); i++ {
+			acc0 += trow[i] * lrow[i]
+		}
+		stp += float64(acc0 + acc1 + acc2 + acc3)
+	}
+	return (stp - g.sumT*sp/n) / math.Sqrt(denP*g.varTN)
+}
+
+// nccExplained reports what template g placed at (x, y) EXPLAINS within its
+// advance columns: coreExpl counts image core-ink pixels (>= thrCore)
+// covered by template ink, faintExpl the covered faint-ink weight (luminance
+// above thrMid, capped at thrCore). The caller subtracts these from the
+// window totals: ink the placement leaves stranded - an 'h' ascender above
+// an 'n', an i-dot above a bare stem - is charged like skipped ink, which no
+// ink-count budget can hide. Runs once per accepted placement (nccScore
+// already scanned the offsets), so the per-pixel branches stay off the hot
+// path.
+func nccExplained(p *nccPlane, g *grayGlyph, x, y, thrMid, thrCore int) (int, int) {
+	x0 := x - g.padX
+	y0 := y - g.padY
 	coreExpl, faintExpl := 0, 0
 	for yy := 0; yy < g.h; yy++ {
 		base := (y0+yy)*p.w + x0
 		trow := g.vals[yy*g.w : (yy+1)*g.w]
-		var acc float32
-		for i, tv := range trow {
-			lum := int(p.lum[base+i])
-			acc += tv * float32(lum)
-			if tv >= 0.35 && i >= g.padX && i < g.padX+g.coreW {
+		for i := g.padX; i < g.padX+g.coreW; i++ {
+			if trow[i] >= 0.35 {
+				lum := int(p.lum[base+i])
 				if lum >= thrCore {
 					coreExpl++
 					faintExpl += thrCore - thrMid
@@ -716,9 +935,8 @@ func nccScore(p *nccPlane, g *grayGlyph, x, y, thrMid, thrCore int) (float64, in
 				}
 			}
 		}
-		stp += float64(acc)
 	}
-	return (stp - g.sumT*sp/n) / math.Sqrt(denP*g.varTN), coreExpl, faintExpl
+	return coreExpl, faintExpl
 }
 
 // nccCand is one acceptable glyph candidate at a column. cost is the DP cost
@@ -734,10 +952,22 @@ type nccCand struct {
 	cost int
 }
 
+// gpqNCCCoarseSlack is how far below a group's acceptance floor its best
+// COARSE-tier correlation may fall while the group still gets the full
+// fine-phase scan. The coarse tier's half-pixel phase grid misaligns a
+// genuine glyph by at most a quarter pixel, which costs it far less
+// correlation than this slack - so no group that could produce an accepted
+// candidate is skipped - while templates for the wrong glyph sit far below
+// the floor and die after the cheap coarse scan.
+const gpqNCCCoarseSlack = 0.12
+
 // nccCandidatesAt collects every template whose best NCC over the band's
-// vertical offsets, with its core's left edge at column x, reaches gpqNCCMin.
-// Candidates are deduplicated per (rune, width), keeping the cheapest.
-// tightPre is the span-local core-ink prefix for span columns [spanX0, spanX1).
+// vertical offsets, with its core's left edge at column x, reaches the
+// font's acceptance floor. Variants are scanned per text group in two
+// tiers - coarse phases first, the rest only when the group is in
+// contention (see gpqNCCCoarseSlack) - and the best passing variant per
+// (text, width) becomes one candidate. tightPre is the span-local core-ink
+// prefix for span columns [spanX0, spanX1).
 func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre, faintPre []int, spanX0, spanX1 int, thrMid, thrCore int) []nccCand {
 	bandH := y1 - y0
 	n := spanX1 - spanX0
@@ -756,11 +986,18 @@ func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre
 		return pre[b] - pre[a]
 	}
 	tightWin := func(a, b int) int { return win(tightPre, a, b) }
-	cands := []nccCand{}
-	for gi := range f.glyphs {
+
+	// cheapest passing placement per advance width within the current group
+	// (phases shift coreW by a pixel, so one text can yield two widths).
+	type placed struct {
+		w, cost int
+	}
+	var bests []placed
+	groupBest := -1.0
+	scan := func(gi int) {
 		g := &f.glyphs[gi]
 		if x+g.coreW > p.w || g.coreH > bandH {
-			continue
+			return
 		}
 		// Ink-budget prefilter on the segmentation planes: the glyph's core
 		// ink must be plausible for the window's loose (upper bound on real
@@ -769,7 +1006,7 @@ func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre
 		lw := loosePre[x+g.coreW] - loosePre[x]
 		tw := tightWin(x, x+g.coreW)
 		if g.ink-lw > g.ink/3+6 || tw-g.ink > g.ink+6 {
-			continue
+			return
 		}
 		yStart := y0
 		yEnd := y1 - g.coreH
@@ -781,34 +1018,50 @@ func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre
 			}
 		}
 		best := -1.0
-		bestCoreExpl, bestFaintExpl := 0, 0
-		for y := yStart; y <= yEnd; y++ {
-			if s, coreExpl, faintExpl := nccScore(p, g, x, y, thrMid, thrCore); s > best {
-				best = s
-				bestCoreExpl = coreExpl
-				bestFaintExpl = faintExpl
+		bestY := yStart
+		if yEnd-yStart >= 4 {
+			// The correlation peak spans several rows (glyph-height
+			// templates), so a stride-2 sweep with a +-1 refinement finds
+			// it at half the scoring cost.
+			for y := yStart; y <= yEnd; y += 2 {
+				if s := nccScore(p, g, x, y); s > best {
+					best = s
+					bestY = y
+				}
+			}
+			for _, y := range [2]int{bestY - 1, bestY + 1} {
+				if y < yStart || y > yEnd {
+					continue
+				}
+				if s := nccScore(p, g, x, y); s > best {
+					best = s
+					bestY = y
+				}
+			}
+		} else {
+			for y := yStart; y <= yEnd; y++ {
+				if s := nccScore(p, g, x, y); s > best {
+					best = s
+					bestY = y
+				}
 			}
 		}
-		minNCC := f.minNCC
-		if g.floor > minNCC {
-			minNCC = g.floor
+		if best > groupBest {
+			groupBest = best
 		}
-		if g.r == ',' && minNCC > gpqNCCMinText {
-			// A thousands separator is stripped from the decoded value, so a
-			// false comma cannot corrupt a score - but a REJECTED genuine
-			// comma becomes skipped ink that trips the dropped-digit guard.
-			// Admit it at the text floor even in the digits font.
-			minNCC = gpqNCCMinText
+		if best < f.glyphFloor(g) {
+			return
 		}
-		if best < minNCC {
-			continue
-		}
+		// The variant passed its floor: account for what its placement
+		// explains and derive its DP cost (this branchy pass runs only for
+		// floor-passing variants - a small fraction of the scans).
+		coreExpl, faintExpl := nccExplained(p, g, x, bestY, thrMid, thrCore)
 		// Unexplained-ink residual, measured against the actual placement:
 		// window core ink the placed template does not cover. This is what
 		// keeps a small glyph from "explaining" a big one by matching a
 		// fragment of it (u inside 0, n inside h) - the stranded remainder
 		// is charged just as skipping it would be.
-		residual := tw - bestCoreExpl
+		residual := tw - coreExpl
 		if residual < 0 {
 			residual = 0
 		}
@@ -823,22 +1076,41 @@ func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre
 			// minus what the template explains: sub-core evidence (blurred
 			// h ascenders, i-dots) a wrong glyph leaves stranded, converted
 			// to core-ink-pixel units.
-			if fm := (win(faintPre, x, x+g.coreW) - bestFaintExpl) / (thrCore - thrMid); fm > 0 {
+			if fm := (win(faintPre, x, x+g.coreW) - faintExpl) / (thrCore - thrMid); fm > 0 {
 				cost += fm / f.faintDiv
 			}
 		}
-		dup := false
-		for ci := range cands {
-			if cands[ci].text == g.text && cands[ci].w == g.coreW {
-				dup = true
-				if cost < cands[ci].cost {
-					cands[ci].cost = cost
+		for bi := range bests {
+			if bests[bi].w == g.coreW {
+				if cost < bests[bi].cost {
+					bests[bi].cost = cost
 				}
-				break
+				return
 			}
 		}
-		if !dup {
-			cands = append(cands, nccCand{text: g.text, n: len([]rune(g.text)), w: g.coreW, cost: cost})
+		bests = append(bests, placed{w: g.coreW, cost: cost})
+	}
+
+	cands := []nccCand{}
+	for grpI := range f.groups {
+		grp := &f.groups[grpI]
+		bests = bests[:0]
+		groupBest = -1.0
+		for _, gi := range grp.coarse {
+			scan(gi)
+		}
+		if groupBest >= grp.minFloor-gpqNCCCoarseSlack {
+			for _, gi := range grp.fine {
+				scan(gi)
+			}
+		}
+		if len(bests) == 0 {
+			continue
+		}
+		text := f.glyphs[grp.coarse[0]].text
+		nRunes := len([]rune(text))
+		for _, b := range bests {
+			cands = append(cands, nccCand{text: text, n: nRunes, w: b.w, cost: b.cost})
 		}
 	}
 	return cands
