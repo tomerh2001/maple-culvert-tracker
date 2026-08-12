@@ -11,3 +11,4 @@ culvert-web2
 __debug_bin*
 convert_discord_id_config.json
 compose.override.yaml
+.claude/
