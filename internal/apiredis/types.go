@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 	redis "github.com/valkey-io/valkey-go"
@@ -50,6 +51,23 @@ func (k redisInternalKey) Set(rdb *redis.Client, v string) error {
 		return ErrNoRedis
 	}
 	return (*rdb).Do(context.Background(), (*rdb).B().Set().Key(os.Getenv(data.EnvVarDiscordGuildID)+"_"+k.ToString()).Value(v).Build()).Error()
+}
+
+// SetEx stores the value with an expiry - used for short-lived confirmation
+// keys (e.g. the resubmit-to-confirm overwrite flow).
+func (k redisInternalKey) SetEx(rdb *redis.Client, v string, ttl time.Duration) error {
+	if rdb == nil || *rdb == nil {
+		return ErrNoRedis
+	}
+	return (*rdb).Do(context.Background(), (*rdb).B().Set().Key(os.Getenv(data.EnvVarDiscordGuildID)+"_"+k.ToString()).Value(v).ExSeconds(int64(ttl.Seconds())).Build()).Error()
+}
+
+// Del removes the key (no-op when absent).
+func (k redisInternalKey) Del(rdb *redis.Client) error {
+	if rdb == nil || *rdb == nil {
+		return ErrNoRedis
+	}
+	return (*rdb).Do(context.Background(), (*rdb).B().Del().Key(os.Getenv(data.EnvVarDiscordGuildID)+"_"+k.ToString()).Build()).Error()
 }
 func (k redisInternalKey) GetWithDefault(rdb *redis.Client, defaultVal string) string {
 	v, err := k.Get(rdb)

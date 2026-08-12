@@ -2,14 +2,12 @@ package commands
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"io"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,39 +17,6 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
-
-func parseImages(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if !requireSubmitPermission(s, i) {
-		return
-	}
-	r := deferReply(s, i, false)
-
-	messageLink := ""
-	for _, v := range i.ApplicationCommandData().Options {
-		if v.Name == "message-link" {
-			messageLink = v.StringValue()
-		}
-	}
-	channelID, messageID, ok := parseMessageLink(messageLink)
-	if !ok {
-		r.Edit("That doesn't look like a message link. Right click a message -> Copy Message Link and paste it here.")
-		return
-	}
-
-	msg, err := s.ChannelMessage(channelID, messageID)
-	if err != nil {
-		log.Println("parseImages: failed to fetch message", messageID, "in channel", channelID, err)
-		r.Edit("Failed to fetch that message. Make sure the link is from this server and I can see the channel.")
-		return
-	}
-	imageURLs := collectImageURLs(msg)
-	if len(imageURLs) == 0 {
-		r.Edit("No image attachments found on the linked message.")
-		return
-	}
-
-	runParseImages(r, imageURLs)
-}
 
 // ocrOutcome is the merged result of OCRing one message's images.
 type ocrOutcome struct {
@@ -75,13 +40,13 @@ type ocrOutcome struct {
 func ocrImagesToScores(imageURLs []string) (*ocrOutcome, error) {
 	font, err := helpers.LoadGPQFont()
 	if err != nil {
-		log.Println("parseImages: failed to load font templates:", err)
+		log.Println("ocrImagesToScores: failed to load font templates:", err)
 		return nil, errors.New("Internal error loading font templates. Please try again later.")
 	}
 
 	characters, err := helpers.GetActiveCharacters(apiredis.RedisDB, db.DB)
 	if err != nil {
-		log.Println("parseImages: failed to query active characters:", err)
+		log.Println("ocrImagesToScores: failed to query active characters:", err)
 		return nil, errors.New("Internal error querying active characters. Please try again later.")
 	}
 	memberNames := make([]string, 0, len(*characters))
@@ -106,12 +71,12 @@ func ocrImagesToScores(imageURLs []string) (*ocrOutcome, error) {
 				return
 			}
 			if cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data)); cerr == nil {
-				log.Printf("parseImages: image %dx%d (%d KB) %s", cfg.Width, cfg.Height, len(data)/1024, url)
+				log.Printf("ocrImagesToScores: image %dx%d (%d KB) %s", cfg.Width, cfg.Height, len(data)/1024, url)
 			}
 			start := time.Now()
 			res, err := helpers.ParseParticipation(data, memberNames, font)
 			if res != nil {
-				log.Printf("parseImages: parsed %d rows in %s (engine %s, scale %.2f, truncated %v)",
+				log.Printf("ocrImagesToScores: parsed %d rows in %s (engine %s, scale %.2f, truncated %v)",
 					len(res.Rows), time.Since(start).Round(time.Millisecond), res.Engine, res.Scale, res.Truncated)
 			}
 			results[idx] = imgResult{res: res, err: err}
@@ -123,11 +88,13 @@ func ocrImagesToScores(imageURLs []string) (*ocrOutcome, error) {
 	mergedPos := map[string]int{}
 	for idx, r := range results {
 		if r.err != nil {
-			log.Println("parseImages: failed to process image", imageURLs[idx], r.err)
+			log.Println("ocrImagesToScores: failed to process image", imageURLs[idx], r.err)
+			// Screenshot-fixable failures are marked errScreenshotUnusable so
+			// the caller replies with the requirements + example screenshot.
 			if errors.Is(r.err, helpers.ErrCulvertWindowNotFound) {
-				return nil, fmt.Errorf("Image %d: %s", idx+1, r.err.Error())
+				return nil, errScreenshotUnusable{fmt.Errorf("Image %d: %s", idx+1, r.err.Error())}
 			}
-			return nil, errors.New("Failed to process one of the images. Please post screenshots of the full Guild window (Member Participation Status page).")
+			return nil, errScreenshotUnusable{errors.New("Failed to process one of the images.")}
 		}
 		out.truncated = out.truncated || r.res.Truncated
 		for _, d := range r.res.Defects {
@@ -166,78 +133,6 @@ func collectUnmatched(entries []helpers.ScoreEntry) []helpers.ScoreEntry {
 	return unmatched
 }
 
-// runParseImages OCRs the given images and edits the deferred interaction
-// response with the FULL annotated row set (every parsed row marked "tracked"
-// or "NEW" - never an unmatched-only view) plus the gpq_scores.json file.
-func runParseImages(r *reply, imageURLs []string) {
-	oc, err := ocrImagesToScores(imageURLs)
-	if err != nil {
-		r.Edit(err.Error())
-		return
-	}
-
-	out, err := marshalOrderedScores(oc.merged)
-	if err != nil {
-		log.Println("parseImages: failed to marshal result:", err)
-		r.Edit("Internal error building the JSON result.")
-		return
-	}
-
-	msg := fmt.Sprintf("Parsed %d row(s) from %d image(s): %d tracked, %d NEW.",
-		len(oc.merged), len(imageURLs), len(oc.merged)-len(oc.unmatched), len(oc.unmatched))
-	if len(oc.unmatched) > 0 {
-		names := make([]string, 0, len(oc.unmatched))
-		truncated := make([]string, 0)
-		for _, e := range oc.unmatched {
-			if e.Ellipsis {
-				// The game cut this name short with an ellipsis: the decode
-				// is an incomplete prefix, never a name to track.
-				truncated = append(truncated, e.Name)
-				continue
-			}
-			names = append(names, e.Name)
-		}
-		if len(names) > 0 {
-			msg += "\nTrack the NEW ones with: `/track-characters names:" + strings.Join(names, ",") + "` (submitting auto-tracks them by default)"
-		}
-		if len(truncated) > 0 {
-			msg += "\n:warning: Truncated in-game (name cut off with \"..\"): `" + strings.Join(capList(truncated, 10), "`, `") +
-				"` - these will NOT be auto-tracked; track their full names with `/track-characters` first."
-		}
-	}
-	msg += ocrWarnings(oc)
-	// Non-fatal validation: scores should be in descending order. If not, warn
-	// but still attach the output so the user can inspect/correct it.
-	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
-		msg += "\n:warning: Scores are not in descending order (`" +
-			oc.merged[idx-1].Name + "`: " + strconv.Itoa(oc.merged[idx-1].Score) + " -> `" +
-			oc.merged[idx].Name + "`: " + strconv.Itoa(oc.merged[idx].Score) +
-			"). The output may be incorrect; please verify."
-	}
-	r.EditWithTable(msg, formatAnnotatedScoresTable(oc.merged, trackedSetOf(oc.merged, oc.unmatched)), "parsed_scores.txt",
-		&discordgo.File{
-			Name:        "gpq_scores.json",
-			ContentType: "application/json",
-			Reader:      strings.NewReader(string(out)),
-		})
-}
-
-// ocrWarnings renders the truncation/conflict/defect warnings of an OCR
-// outcome (empty string when clean). Lists are capped so the reply stays
-// within Discord's content limits.
-func ocrWarnings(oc *ocrOutcome) string {
-	msg := ""
-	if oc.truncated {
-		msg += "\n:warning: The parse hit its time limit - results may be incomplete. Try again or crop the screenshot."
-	}
-	if len(oc.conflicts) > 0 {
-		msg += "\n:warning: Conflicting scores for the same character across images (kept the first, please verify):"
-		msg += "\n- " + strings.Join(capList(oc.conflicts, 5), "\n- ")
-	}
-	msg += defectsWarning(oc.defects)
-	return msg
-}
-
 // defectsWarning renders the non-fatal parse-defect list of an OCR outcome
 // ("" when clean). Defects never block a parse or submission, but they are
 // never dropped silently either.
@@ -267,33 +162,6 @@ func firstDescendingViolation(entries []helpers.ScoreEntry) int {
 		}
 	}
 	return -1
-}
-
-// marshalOrderedScores emits a JSON object of name -> score with 4-space
-// indentation, preserving the given entry order (encoding/json sorts map keys,
-// so a map cannot be used here).
-func marshalOrderedScores(entries []helpers.ScoreEntry) ([]byte, error) {
-	if len(entries) == 0 {
-		return []byte("{}"), nil
-	}
-	var b strings.Builder
-	b.WriteString("{\n")
-	for idx, e := range entries {
-		key, err := json.Marshal(e.Name)
-		if err != nil {
-			return nil, err
-		}
-		b.WriteString("    ")
-		b.Write(key)
-		b.WriteString(": ")
-		b.WriteString(strconv.Itoa(e.Score))
-		if idx < len(entries)-1 {
-			b.WriteByte(',')
-		}
-		b.WriteByte('\n')
-	}
-	b.WriteByte('}')
-	return []byte(b.String()), nil
 }
 
 func isImageAttachment(a *discordgo.MessageAttachment) bool {

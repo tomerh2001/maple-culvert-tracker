@@ -17,29 +17,26 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, true)
 
 	characterName := ""
-	skipNameCheck := false
 	callerID := i.Member.User.ID
 	targetID := callerID
 	for _, v := range i.ApplicationCommandData().Options {
 		switch v.Name {
-		case "character-name":
+		case "name":
 			characterName = strings.TrimSpace(v.StringValue())
 		case "user":
 			if u := v.UserValue(nil); u != nil {
 				targetID = u.ID
 			}
-		case "skip-name-check":
-			skipNameCheck = v.BoolValue()
 		}
 	}
 	if characterName == "" {
-		r.Edit("Please provide the character name: `/register character-name:YourCharacter`")
+		r.Edit("Please provide the character name: `/register name:YourCharacter`")
 		return
 	}
 
 	forOther := targetID != callerID
 	if forOther && !canSubmitScores(i) {
-		r.Edit("Registering a character for someone else needs submitter permissions. They can register themselves with `/register character-name:TheirCharacter`.")
+		r.Edit("Registering a character for someone else needs submitter permissions. They can register themselves with `/register name:TheirCharacter`.")
 		return
 	}
 
@@ -47,13 +44,11 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// The check is ADVISORY: a lookup failure or miss never blocks
 	// registration, it only adds a warning to the receipt.
 	warning := ""
-	if !skipNameCheck {
-		charData, err := helpers.FetchCharacterData(characterName, apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, "na"))
-		if err != nil || charData == nil {
-			warning = "\n:warning: I couldn't verify `" + characterName + "` against the official rankings - double-check the spelling (`/rename-character` fixes typos later)."
-		} else {
-			characterName = charData.CharacterName
-		}
+	charData, err := helpers.FetchCharacterData(characterName, apiredis.OPTIONAL_CONF_MAPLE_REGION.GetWithDefault(apiredis.RedisDB, "na"))
+	if err != nil || charData == nil {
+		warning = "\n:warning: I couldn't verify `" + characterName + "` against the official rankings - double-check the spelling (`/unregister` + `/register` fixes typos)."
+	} else {
+		characterName = charData.CharacterName
 	}
 
 	who := "you"
@@ -63,7 +58,7 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	var existingID int64
 	var existingOwner string
-	err := db.DB.QueryRow(
+	err = db.DB.QueryRow(
 		`SELECT id, discord_user_id FROM characters WHERE LOWER(maple_character_name) = LOWER($1)`,
 		characterName).Scan(&existingID, &existingOwner)
 	switch {
@@ -83,7 +78,7 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		r.Edit("`" + characterName + "` is already registered to " + who + ". Nothing to do!" + warning)
 		return
 	case existingOwner != "1" && existingOwner != "2" && existingOwner != "" && !canSubmitScores(i):
-		r.Edit("`" + characterName + "` is already registered to <@" + existingOwner + ">. If that's wrong, ask an admin or submitter to move it with `/register character-name:" + characterName + " user:@the-right-person`.")
+		r.Edit("`" + characterName + "` is already registered to <@" + existingOwner + ">. If that's wrong, ask an admin or submitter to move it with `/register name:" + characterName + " user:@the-right-person`.")
 		return
 	default:
 		// Unlinked, or a submitter/admin relinking it to the target.
@@ -101,4 +96,92 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	r.Edit("Done! `" + characterName + "` is now registered to you. :tada:" + warning + "\nTry `/culvert` to see your progression once your scores are in.")
+}
+
+// unregisterCharacter untracks a character by name, or ALL characters
+// registered to a member (user option / the invoker by default). History is
+// always kept (rows keep their scores; discord_user_id becomes '1').
+func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r := deferReply(s, i, true)
+
+	name := ""
+	callerID := i.Member.User.ID
+	targetID := callerID
+	userGiven := false
+	for _, v := range i.ApplicationCommandData().Options {
+		switch v.Name {
+		case "name":
+			name = strings.TrimSpace(v.StringValue())
+		case "user":
+			if u := v.UserValue(nil); u != nil {
+				targetID = u.ID
+				userGiven = true
+			}
+		}
+	}
+
+	// name given -> untrack that one character.
+	if name != "" {
+		var charID int64
+		var owner, realName string
+		err := db.DB.QueryRow(
+			`SELECT id, discord_user_id, maple_character_name FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND discord_user_id != '1'`,
+			name).Scan(&charID, &owner, &realName)
+		if err == sql.ErrNoRows {
+			r.Edit("No tracked character named `" + name + "` found - nothing to do.")
+			return
+		}
+		if err != nil {
+			log.Println("unregister: lookup failed:", err)
+			r.Edit("Something went wrong. Please try again later.")
+			return
+		}
+		if owner != callerID && !canSubmitScores(i) {
+			r.Edit("`" + realName + "` isn't registered to you - untracking someone else's character needs submitter permissions.")
+			return
+		}
+		if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '1' WHERE id = $1`, charID); err != nil {
+			log.Println("unregister: update failed:", err)
+			r.Edit("Something went wrong. Please try again later.")
+			return
+		}
+		r.Edit("`" + realName + "` is no longer tracked. Its history is kept and it can be re-registered anytime.")
+		return
+	}
+
+	// No name -> untrack ALL characters registered to the target member.
+	if userGiven && targetID != callerID && !canSubmitScores(i) {
+		r.Edit("Unregistering someone else's characters needs submitter permissions.")
+		return
+	}
+	rows, err := db.DB.Query(
+		`SELECT maple_character_name FROM characters WHERE discord_user_id = $1 ORDER BY maple_character_name`, targetID)
+	if err != nil {
+		log.Println("unregister: list failed:", err)
+		r.Edit("Something went wrong. Please try again later.")
+		return
+	}
+	names := []string{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err == nil {
+			names = append(names, n)
+		}
+	}
+	rows.Close()
+
+	who := "you"
+	if targetID != callerID {
+		who = "<@" + targetID + ">"
+	}
+	if len(names) == 0 {
+		r.Edit("No characters are registered to " + who + " - nothing to do.")
+		return
+	}
+	if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '1' WHERE discord_user_id = $1`, targetID); err != nil {
+		log.Println("unregister: bulk update failed:", err)
+		r.Edit("Something went wrong. Please try again later.")
+		return
+	}
+	r.Edit("Untracked `" + strings.Join(capList(names, 25), "`, `") + "` (registered to " + who + "). History is kept; `/register` re-links anytime.")
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,158 +20,176 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
+// maxCulvertChartWeeks is the sane cap on charted weeks when from/to leave
+// the window open (the most recent weeks win).
+const maxCulvertChartWeeks = 104
+
+// userMentionRe matches a Discord user mention: <@123> or <@!123>.
+var userMentionRe = regexp.MustCompile(`^<@!?(\d+)>$`)
+
+// culvertBase serves /culvert (public) and the Culvert user context menu.
+// name resolves to either a member (mention / empty = invoker / menu target:
+// their registered characters, with a choice list when they have several) or
+// a tracked character by name (case-insensitive). from/to bound the charted
+// weeks; either side may be omitted.
 func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, false)
 
-	// Parse discord param character-name
-	charName := ""
-	date := ""
-	weeks := int64(8)
-	yAxisStartAt0 := false
-
+	nameArg := ""
+	fromStr := ""
+	toStr := ""
 	cmdData := i.ApplicationCommandData()
-	targetUserID := i.Member.User.ID
-	options := cmdData.Options
-	for _, v := range options {
-		if v.Name == "character-name" {
-			charName = strings.ToLower(v.StringValue())
-		}
-		if v.Name == "user" {
-			if u := v.UserValue(nil); u != nil {
-				targetUserID = u.ID
-			}
-		}
-		if v.Name == "date" {
-			date = v.StringValue()
-		}
-		if v.Name == "weeks" {
-			weeks = v.IntValue()
-		}
-		if v.Name == "y-axis-start-at-0" {
-			yAxisStartAt0 = v.BoolValue()
+	for _, v := range cmdData.Options {
+		switch v.Name {
+		case "name":
+			nameArg = strings.TrimSpace(v.StringValue())
+		case "from":
+			fromStr = v.StringValue()
+		case "to":
+			toStr = v.StringValue()
 		}
 	}
-	if cmdData.Name == "Culvert" && cmdData.TargetID != "" {
+
+	targetUserID := i.Member.User.ID
+	charName := ""
+	switch {
+	case cmdData.Name == "Culvert" && cmdData.TargetID != "":
 		// User context menu: right click a member -> Apps -> Culvert.
 		targetUserID = cmdData.TargetID
+	case nameArg != "":
+		if m := userMentionRe.FindStringSubmatch(nameArg); m != nil {
+			targetUserID = m[1]
+		} else {
+			charName = strings.ToLower(nameArg)
+		}
 	}
-	isSelf := targetUserID == i.Member.User.ID
+	byName := charName != ""
+	isSelf := !byName && targetUserID == i.Member.User.ID
 
-	// Validate date format
-	if date != "" {
-		d, err := time.Parse(time.DateOnly, date) // YYYY-MM-DD
+	// Explicit dates name week LABELS: normalize both bounds to week keys so
+	// e.g. a Saturday `from` includes its own week.
+	fromKey := ""
+	toKey := ""
+	if fromStr != "" {
+		d, err := parseFlexibleDate(fromStr)
 		if err != nil {
-			r.Edit("Invalid date format, should be YYYY-MM-DD")
+			r.Edit(badDateMessage)
 			return
 		}
-		date = cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)
+		fromKey = cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)
+	}
+	if toStr != "" {
+		d, err := parseFlexibleDate(toStr)
+		if err != nil {
+			r.Edit(badDateMessage)
+			return
+		}
+		toKey = cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)
+	}
+	if fromKey != "" && toKey != "" && fromKey > toKey {
+		r.Edit("`from` is after `to` - nothing to chart.")
+		return
 	}
 
-	// Default: the caller's (or targeted user's) own characters. When a
-	// character name is given, search every tracked character instead.
+	// Resolve the character: the member's registered characters, or a tracked
+	// character by name.
 	sql := `SELECT id, maple_character_name FROM characters WHERE characters.discord_user_id = $1 ORDER BY id`
-	byName := charName != "" && targetUserID == i.Member.User.ID && cmdData.Name != "Culvert"
 	if byName {
 		sql = `SELECT id, maple_character_name FROM characters WHERE characters.discord_user_id != '1' ORDER BY maple_character_name`
 	}
-
-	// Count # of chars
 	stmt, err := db.DB.Prepare(sql)
 	if err != nil {
-		log.Println("Failed prepare find characters", err)
+		log.Println("culvert: prepare find characters:", err)
 		r.Edit("Something went wrong querying the database.")
 		return
 	}
 	args := []any{}
-	if strings.Contains(sql, "$1") {
+	if !byName {
 		args = append(args, targetUserID)
 	}
 	rows, err := stmt.Query(args...)
 	if err != nil {
-		log.Println("Query at find characters", err)
+		log.Println("culvert: query find characters:", err)
 		r.Edit("Something went wrong querying the database.")
 		return
 	}
 	count := 0
+	names := []string{}
 	characters := map[string]struct {
 		name string
 		id   int64
 	}{}
-	choices := ""
-	lastSeenCharName := ""
-	var lastSeenCharID int64 = 0
-	choicesNumOfCharInLine := 0
+	matchedName := ""
+	var matchedID int64
 	for rows.Next() {
-		count++
 		var c string
-		var i int64
-		rows.Scan(&i, &c)
-		if choicesNumOfCharInLine < 3 {
-			choices += c + ","
-		} else {
-			choices += c + "\n"
-		}
-		choicesNumOfCharInLine++
-		if choicesNumOfCharInLine > 3 {
-			choicesNumOfCharInLine = 0
-		}
+		var id int64
+		rows.Scan(&id, &c)
+		count++
+		names = append(names, c)
 		characters[strings.ToLower(c)] = struct {
 			name string
 			id   int64
-		}{name: c, id: i}
-		lastSeenCharID = i
-		lastSeenCharName = c
+		}{name: c, id: id}
+		matchedID = id
+		matchedName = c
 	}
 	rows.Close()
 	stmt.Close()
 
-	if count == 0 && !byName {
-		// No registered character: explain what to do in plain words.
-		msg := "**<@" + targetUserID + ">** hasn't registered a MapleStory character yet.\n" +
-			"They can link one by typing `/register` and entering their character name - after that this command will work."
-		if isSelf {
-			msg = "You haven't registered a MapleStory character yet!\n" +
-				"Type `/register` and enter your character name (for example `/register character-name:HTomer`), then try again."
+	if byName {
+		hit, ok := characters[charName]
+		if !ok {
+			r.Edit("No tracked character named `" + nameArg + "` found. Check the spelling, or mention the member instead (`/culvert name:@them`).")
+			return
 		}
-		r.Edit(msg)
-		return
+		matchedID, matchedName = hit.id, hit.name
+	} else {
+		if count == 0 {
+			msg := "**<@" + targetUserID + ">** hasn't registered a MapleStory character yet.\n" +
+				"They can link one by typing `/register` and entering their character name - after that this command will work."
+			if isSelf {
+				msg = "You haven't registered a MapleStory character yet!\n" +
+					"Type `/register` and enter your character name (for example `/register name:HTomer`), then try again."
+			}
+			r.Edit(msg)
+			return
+		}
+		if count > 1 {
+			// Several registered characters: list the choices inline (text
+			// only) and let the caller pick one by name.
+			who := "You have"
+			if !isSelf {
+				who = "<@" + targetUserID + "> has"
+			}
+			r.EditChunked(who + " multiple characters - pick one with `/culvert name:<character>`:\n`" +
+				strings.Join(names, "`, `") + "`")
+			return
+		}
+		// Exactly one: matchedID/matchedName already hold it.
 	}
 
-	choicesMsg := "Available characters:"
-	if !isSelf && !byName {
-		choicesMsg = "<@" + targetUserID + "> has multiple characters. Pick one with `/culvert user:@them character-name:<name>`. Available characters:"
+	where := ""
+	args = []any{matchedID}
+	if fromKey != "" {
+		args = append(args, fromKey)
+		where += " AND character_culvert_scores.culvert_date >= $" + strconv.Itoa(len(args))
 	}
-
-	if _, ok := characters[charName]; count == 0 || (count > 1 && charName == "") || (!ok && charName != "") {
-		r.Edit(choicesMsg, &discordgo.File{Name: "message.csv", Reader: strings.NewReader(choices)})
-		return
-	} else if ok {
-		lastSeenCharID = characters[charName].id
-		lastSeenCharName = characters[charName].name
+	if toKey != "" {
+		args = append(args, toKey)
+		where += " AND character_culvert_scores.culvert_date <= $" + strconv.Itoa(len(args))
 	}
-	// There is only 1 character, and at this point charID is correct too.
-
-	additionalWhere := ""
-	if date != "" {
-		additionalWhere += " AND character_culvert_scores.culvert_date <= $2"
-	}
-	// query score
-	sql = `SELECT character_culvert_scores.culvert_date, character_culvert_scores.score FROM characters INNER JOIN character_culvert_scores ON character_culvert_scores.character_id = characters.id WHERE characters.id = $1` + additionalWhere + ` ORDER BY character_culvert_scores.culvert_date DESC LIMIT ` + strconv.FormatInt(weeks, 10)
-	// Concat here is not an sql injection because I trust discord sanitizing the `weeks` variable
+	sql = `SELECT character_culvert_scores.culvert_date, character_culvert_scores.score FROM characters INNER JOIN character_culvert_scores ON character_culvert_scores.character_id = characters.id WHERE characters.id = $1` + where + ` ORDER BY character_culvert_scores.culvert_date DESC LIMIT ` + strconv.Itoa(maxCulvertChartWeeks)
 	stmt, err = db.DB.Prepare(sql)
 	if err != nil {
-		log.Println("Failed 1st prepare at culvert command", err)
+		log.Println("culvert: prepare scores query:", err)
 		r.Edit("Something went wrong querying the database.")
 		return
 	}
 	defer stmt.Close()
-	args = []any{lastSeenCharID}
-	if date != "" {
-		args = append(args, date)
-	}
 	rows, err = stmt.Query(args...)
 	if err != nil {
-		log.Println("Query at culvert command", err)
+		log.Println("culvert: scores query:", err)
 		r.Edit("Something went wrong querying the database.")
 		return
 	}
@@ -185,29 +204,26 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	if len(chartData) == 0 {
-		r.Edit("No data on " + lastSeenCharName + "...")
+		r.Edit("No data on " + matchedName + " in that period...")
 		return
 	}
 	slices.Reverse(chartData)
 
 	jsonData, err := json.Marshal(chartData)
 	if err != nil {
-		log.Println("json at culvert command failed?", err)
-		r.Edit("Something and something broko...")
+		log.Println("culvert: chart data marshal failed:", err)
+		r.Edit("Something went wrong building the chart data.")
 		return
 	}
 
-	statistics, _ := cmdhelpers.GetCharacterStatistics(db.DB, apiredis.RedisDB, lastSeenCharName, date, chartData)
-	// Code below handles statistics nil value
-	// Error here does not break execution
+	statistics, _ := cmdhelpers.GetCharacterStatistics(db.DB, apiredis.RedisDB, matchedName, toKey, chartData)
+	// Statistics are decorative: a nil value only hides the extra fields.
 
-	// Sample below
-	// jsonData := []byte(`[{"label":"2/26","score":0},{"label":"3/5","score":1233},{"label":"3/12","score":8000},{"label":"3/19","score":8100},{"label":"3/26","score":5600},{"label":"4/2","score":5500},{"label":"4/9","score":25000}]`)
-	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker?y-axis-start-at-0="+strconv.FormatBool(yAxisStartAt0), "application/json", bytes.NewBuffer(jsonData))
+	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker?y-axis-start-at-0=false", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil || resp.StatusCode != http.StatusOK {
 		r.Edit("Looks like my `chartmaker` component is broken... ")
 		return
 	}
 	defer resp.Body.Close()
-	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, lastSeenCharName, date, statistics))
+	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, matchedName, toKey, statistics))
 }

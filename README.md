@@ -8,30 +8,32 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 
 ## What it does
 
-- **Screenshot → scores in one step**: post a screenshot of the in-game *Guild → Member Participation Status* window (full window is fine), right click it → Apps → **Submit Scores**. The bot OCRs the table (no cropping needed, 1x/2x scale supported) and records everyone's weekly score.
+- **Screenshot → scores in one step**: post a screenshot of the in-game *Guild → Member Participation Status* window (full window is fine), right click it → Apps → **Submit Scores**. The bot OCRs the table (no cropping needed, 1x/2x scale supported) and records everyone's weekly score. That right-click menu is the ONLY submission path; unknown names are auto-tracked (canonicalized against the official rankings), and conflicting resubmissions ask you to resubmit within 10 minutes to confirm the overwrite.
 - **One announcement per week, no spam**: in a designated channel the bot keeps a single message per culvert week with the full ranked table (edited in place on every submission), plus a thread with submission notes and personal-best shoutouts that @mention the member. Nothing else is ever posted, and only if a channel is configured.
-- **Members self-serve**: `/register` links a character to a Discord account, `/culvert` charts progression (yours, `user:@someone`, or any `character-name:`), right click a member → Apps → **Culvert** works too.
-- **Configurable permissions**: admins choose which roles/users may submit scores, and can optionally allow members to `/report-score` their own runs.
+- **Members self-serve**: `/register` links a character to a Discord account, `/culvert` charts progression (yours, `name:@someone`, or any `name:SomeChar`), right click a member → Apps → **Culvert** works too.
+- **Correct week boundary**: the culvert week rolls over at the in-game reset instant, Thursday 00:00 UTC (03:00 Israel summer time) — not at Wednesday's calendar date.
+- **Quiet by default**: every command reply is ephemeral (visible only to the invoker) except the public `/culvert` and `/culvert-board`.
 - **Multi-server shared database**: one deployment can serve several Discord servers over the same data (env-only config, see `DISCORD_EXTRA_GUILD_IDS`).
 
 ## Commands
 
+The entire surface — 9 slash commands, 2 context menus:
+
 | Command | Who | What |
 |---|---|---|
-| `/help` | everyone | User guide |
-| `/register` | everyone | Link a character (yours; submitters can link for others with `user:@x`) |
-| `/culvert` | everyone | Progression chart (self, `user:@x`, or `character-name:`) |
-| `/leaderboard` | everyone | Weekly ranked table, or guild-wide chart with `chart:True` |
-| `/personal-bests` | everyone | Best score per character |
-| `/list-characters` | everyone | Tracked roster |
-| `/report-score` | everyone | Self-report this week's score (admin-toggled) |
-| `/submit-scores` | submitters | Submit from a scores file or a message link (OCR) |
-| `/parse-images` | submitters | OCR screenshots to a scores file without submitting |
-| `/untrack-character`, `/rename-character`, `/set-score` | submitters | Roster & score management |
-| `/config` | admins | View/change all bot settings |
-| `/setup` | admins | Admin setup guide |
-| Right click message → Apps → **Parse Images** / **Submit Scores** | submitters | The fastest weekly flow |
+| `/culvert-help` | everyone | User guide |
+| `/register` | everyone | Link a character by `name:` (submitters can link for others with `user:@x`) |
+| `/unregister` | everyone | Untrack a character by `name:`, or all of a member's characters (history kept) |
+| `/culvert` | everyone | Progression chart: `name:` is a character or a `@mention` (default you); optional `from:`/`to:` dates |
+| `/culvert-board` | everyone | Weekly score-descending table (optional `date:`) |
+| `/set-culvert` | submitters | Set one character's score for a week (unknown names auto-tracked) |
+| `/config` | admins | View/change all bot settings (`setting:` + `value:`) |
+| `/setup` | admins | Admin setup guide + live status |
+| `/health` | admins | Full self-check (DB, Discord permissions, config) |
+| Right click message → Apps → **Submit Scores** | submitters | THE submission path (OCR or a `.json` scores file) |
 | Right click member → Apps → **Culvert** | everyone | Their chart |
+
+Date options accept `YYYY-MM-DD` or a Discord timestamp mention (`<t:123456>`).
 
 ## Deployment
 
@@ -57,7 +59,9 @@ Go 1.25+; `go test ./...` runs the OCR suite against real fixture screenshots in
 - Web admin panel, `/login`, and the JWT web auth are **removed** — `/config` and the other slash commands cover everything.
 - OCR accepts full Guild-window screenshots (header-anchored table detection) instead of pre-cropped images only.
 - Weekly announcement message + thread instead of per-submission channel messages; no reminder/monthly-report crons; no sandbagger imagery.
-- Duel/sandbagger/rat/participation novelty commands removed; `culvert-anyone`, `culvert-summary`, `culvert-mega-chart`, and `submit-scores-from-attachment` were consolidated into `/culvert`, `/leaderboard`, and `/submit-scores`.
+- The command surface is deliberately tiny (9 slash commands + 2 context menus). Upstream's duel/sandbagger/rat novelty commands, the bulk roster commands, csv export, and all slash-command submission paths were removed — right click → **Submit Scores** and `/set-culvert` cover submission entirely.
+- Command replies are text-only and ephemeral by default. Exactly two replies attach an image: the `/culvert` chart, and the **Submit Scores** OCR failure help, which explains the screenshot requirements and attaches an example screenshot.
+- Week keys stay Wednesday dates, but the current week is computed from the true reset instant (Thursday 00:00 UTC).
 
 ## License
 

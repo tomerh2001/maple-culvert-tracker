@@ -2,20 +2,27 @@ package commands
 
 import (
 	"log"
-	"strings"
 
 	"github.com/bwmarrin/discordgo"
 )
 
 // reply is a handle to a deferred interaction response, replacing the
 // editContent closures that used to be duplicated across command handlers.
+// Command replies are TEXT-ONLY by design: no file attachments, with exactly
+// two sanctioned exceptions that go through EditData - the /culvert chart
+// embed, and the Submit Scores OCR failure help, which attaches an example
+// screenshot (editScreenshotFailure, a product-owner-mandated exception).
 type reply struct {
-	s *discordgo.Session
-	i *discordgo.InteractionCreate
+	s         *discordgo.Session
+	i         *discordgo.InteractionCreate
+	ephemeral bool
 }
 
 // deferReply sends the Deferred interaction response (the "thinking..."
 // placeholder) and returns a handle used to fill it in later with Edit.
+// ephemeral=true keeps the reply (and every followup chunk) visible only to
+// the invoking user - the default for all commands except /culvert and
+// /culvert-board.
 func deferReply(s *discordgo.Session, i *discordgo.InteractionCreate, ephemeral bool) *reply {
 	resp := &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -26,22 +33,18 @@ func deferReply(s *discordgo.Session, i *discordgo.InteractionCreate, ephemeral 
 	if err := s.InteractionRespond(i.Interaction, resp); err != nil {
 		log.Println("deferReply: InteractionRespond:", err)
 	}
-	return &reply{s: s, i: i}
+	return &reply{s: s, i: i, ephemeral: ephemeral}
 }
 
-// Edit replaces the deferred response content, attaching any given files.
-func (r *reply) Edit(msg string, files ...*discordgo.File) {
-	edit := &discordgo.WebhookEdit{Content: &msg}
-	if len(files) > 0 {
-		edit.Files = files
-	}
-	if _, err := r.s.InteractionResponseEdit(r.i.Interaction, edit); err != nil {
+// Edit replaces the deferred response content.
+func (r *reply) Edit(msg string) {
+	if _, err := r.s.InteractionResponseEdit(r.i.Interaction, &discordgo.WebhookEdit{Content: &msg}); err != nil {
 		log.Println("reply.Edit: InteractionResponseEdit:", err)
 	}
 }
 
 // EditData edits the deferred response from an InteractionResponseData
-// (embeds + files + content), for handlers whose output is built elsewhere.
+// (embeds + files + content) - the /culvert chart path.
 func (r *reply) EditData(d *discordgo.InteractionResponseData) {
 	edit := &discordgo.WebhookEdit{}
 	if d.Content != "" {
@@ -59,42 +62,54 @@ func (r *reply) EditData(d *discordgo.InteractionResponseData) {
 }
 
 // EditChunked splits msg on line boundaries under Discord's content limit and
-// delivers the first chunk via Edit and the rest as ephemeral followups.
+// delivers the first chunk via Edit and the rest as followups matching the
+// reply's visibility.
 func (r *reply) EditChunked(msg string) {
 	for idx, chunk := range chunkText(msg, 1900) {
 		if idx == 0 {
 			r.Edit(chunk)
 			continue
 		}
-		if _, err := r.s.FollowupMessageCreate(r.i.Interaction, true, &discordgo.WebhookParams{
-			Content: chunk,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		}); err != nil {
+		params := &discordgo.WebhookParams{Content: chunk}
+		if r.ephemeral {
+			params.Flags = discordgo.MessageFlagsEphemeral
+		}
+		if _, err := r.s.FollowupMessageCreate(r.i.Interaction, true, params); err != nil {
 			log.Println("reply.EditChunked: FollowupMessageCreate:", err)
 		}
 	}
 }
 
 // EditWithTable edits the deferred response with msg plus a rendered text
-// table: inline as a code block when it fits Discord's content limit,
-// otherwise attached as filename. extraFiles are attached either way.
-func (r *reply) EditWithTable(msg, tbl, filename string, extraFiles ...*discordgo.File) {
-	inline := msg + "\n```\n" + tbl + "\n```"
-	if len(inline) <= 1900 {
-		r.Edit(inline, extraFiles...)
+// table in code fences, chunking long tables so every chunk keeps its own
+// fences (replies are text-only - tables are never attached as files). The
+// first message carries msg + the first table chunk; the rest follow as
+// fenced followups matching the reply's visibility.
+func (r *reply) EditWithTable(msg, tbl string) {
+	if inline := msg + "\n```\n" + tbl + "\n```"; len(inline) <= 1900 {
+		r.Edit(inline)
 		return
 	}
-	files := append([]*discordgo.File{{
-		Name:        filename,
-		ContentType: "text/plain",
-		Reader:      strings.NewReader(tbl),
-	}}, extraFiles...)
-	r.Edit(msg, files...)
+	chunks := chunkText(tbl, 1700)
+	if first := msg + "\n```\n" + chunks[0] + "\n```"; len(first) <= 1990 {
+		r.Edit(first)
+		chunks = chunks[1:]
+	} else {
+		r.Edit(msg)
+	}
+	for _, chunk := range chunks {
+		params := &discordgo.WebhookParams{Content: "```\n" + chunk + "\n```"}
+		if r.ephemeral {
+			params.Flags = discordgo.MessageFlagsEphemeral
+		}
+		if _, err := r.s.FollowupMessageCreate(r.i.Interaction, true, params); err != nil {
+			log.Println("reply.EditWithTable: FollowupMessageCreate:", err)
+		}
+	}
 }
 
-// registerReply sends an immediate ephemeral response (no defer). Kept under
-// its historical name because handlers outside this wave still call it; the
-// repo-wide rename is a later wave.
+// registerReply sends an immediate ephemeral response (no defer), for
+// permission denials and other pre-defer errors.
 func registerReply(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,

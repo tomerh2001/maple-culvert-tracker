@@ -282,7 +282,8 @@ func buildSubmissionNote(dbc *sql.DB, week time.Time, weekStr string, rows []wee
 	if zeroFilled > 0 {
 		scope = fmt.Sprintf("%d characters: %d with scores, %d zero-filled", len(changedIDs), nonZero, zeroFilled)
 	}
-	note := fmt.Sprintf("Scores submitted <t:%d:f> for week **%s** (%s).", time.Now().Unix(), weekStr, scope)
+	note := fmt.Sprintf("Scores submitted <t:%d:f> for **%s** (%s).", time.Now().Unix(),
+		cmdhelpers.FormatWeekLabel(week, time.Now()), scope)
 
 	pbs := newPersonalBests(dbc, week, rows, changedIDs)
 	if len(pbs) > 0 {
