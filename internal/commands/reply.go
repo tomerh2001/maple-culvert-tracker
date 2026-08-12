@@ -8,8 +8,10 @@ import (
 
 // reply is a handle to a deferred interaction response, replacing the
 // editContent closures that used to be duplicated across command handlers.
-// Command replies are TEXT-ONLY by design: no file attachments (the /culvert
-// chart embed goes through EditData, which is the one image-bearing path).
+// Command replies are TEXT-ONLY by design: no file attachments, with exactly
+// two sanctioned exceptions that go through EditData - the /culvert chart
+// embed, and the Submit Scores OCR failure help, which attaches an example
+// screenshot (editScreenshotFailure, a product-owner-mandated exception).
 type reply struct {
 	s         *discordgo.Session
 	i         *discordgo.InteractionCreate

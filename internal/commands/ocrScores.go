@@ -89,10 +89,12 @@ func ocrImagesToScores(imageURLs []string) (*ocrOutcome, error) {
 	for idx, r := range results {
 		if r.err != nil {
 			log.Println("ocrImagesToScores: failed to process image", imageURLs[idx], r.err)
+			// Screenshot-fixable failures are marked errScreenshotUnusable so
+			// the caller replies with the requirements + example screenshot.
 			if errors.Is(r.err, helpers.ErrCulvertWindowNotFound) {
-				return nil, fmt.Errorf("Image %d: %s", idx+1, r.err.Error())
+				return nil, errScreenshotUnusable{fmt.Errorf("Image %d: %s", idx+1, r.err.Error())}
 			}
-			return nil, errors.New("Failed to process one of the images. Please post screenshots of the full Guild window (Member Participation Status page).")
+			return nil, errScreenshotUnusable{errors.New("Failed to process one of the images.")}
 		}
 		out.truncated = out.truncated || r.res.Truncated
 		for _, d := range r.res.Defects {

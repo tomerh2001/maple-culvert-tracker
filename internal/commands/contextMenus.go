@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"strconv"
 	"strings"
@@ -102,13 +103,22 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 
 	imageURLs := collectImageURLs(msg)
 	if len(imageURLs) == 0 {
-		r.Edit("No image or scores attachments found on the selected message.")
+		r.editScreenshotFailure("No image or scores attachments found on the selected message.")
 		return "", false
 	}
 
 	oc, err := ocrImagesToScores(imageURLs)
 	if err != nil {
-		r.Edit(err.Error())
+		// Screenshot-fixable failures carry the requirements explainer and
+		// the example screenshot; internal errors stay text-only. The
+		// semantic gates below (truncation, conflicts, ordering) mean the
+		// parse worked but is unsafe - they keep their own instructions.
+		var unusable errScreenshotUnusable
+		if errors.As(err, &unusable) {
+			r.editScreenshotFailure(err.Error())
+		} else {
+			r.Edit(err.Error())
+		}
 		return "", false
 	}
 	// Submission safety gates: an incomplete (time-limited) or internally

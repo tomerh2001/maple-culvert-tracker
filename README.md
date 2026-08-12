@@ -60,7 +60,7 @@ Go 1.25+; `go test ./...` runs the OCR suite against real fixture screenshots in
 - OCR accepts full Guild-window screenshots (header-anchored table detection) instead of pre-cropped images only.
 - Weekly announcement message + thread instead of per-submission channel messages; no reminder/monthly-report crons; no sandbagger imagery.
 - The command surface is deliberately tiny (9 slash commands + 2 context menus). Upstream's duel/sandbagger/rat novelty commands, the bulk roster commands, csv export, and all slash-command submission paths were removed — right click → **Submit Scores** and `/set-culvert` cover submission entirely.
-- Command replies are text-only (no file attachments except the `/culvert` chart) and ephemeral by default.
+- Command replies are text-only and ephemeral by default. Exactly two replies attach an image: the `/culvert` chart, and the **Submit Scores** OCR failure help, which explains the screenshot requirements and attaches an example screenshot.
 - Week keys stay Wednesday dates, but the current week is computed from the true reset instant (Thursday 00:00 UTC).
 
 ## License
