@@ -92,6 +92,7 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 
+	warning += refreshWeeklyLine(s, i)
 	if forOther {
 		r.Edit("Done! `" + characterName + "` is now registered to " + who + ". :tada:" + warning)
 		return
@@ -147,7 +148,7 @@ func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			r.Edit("Something went wrong. Please try again later.")
 			return
 		}
-		r.Edit("`" + realName + "` is no longer tracked. Its history is kept and it can be re-registered anytime.")
+		r.Edit("`" + realName + "` is no longer tracked. Its history is kept and it can be re-registered anytime." + refreshWeeklyLine(s, i))
 		return
 	}
 
@@ -185,5 +186,5 @@ func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		r.Edit("Something went wrong. Please try again later.")
 		return
 	}
-	r.Edit("Untracked `" + strings.Join(capList(names, 25), "`, `") + "` (registered to " + who + "). History is kept; `/register` re-links anytime.")
+	r.Edit("Untracked `" + strings.Join(capList(names, 25), "`, `") + "` (registered to " + who + "). History is kept; `/register` re-links anytime." + refreshWeeklyLine(s, i))
 }

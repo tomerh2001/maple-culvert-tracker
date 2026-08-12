@@ -45,7 +45,7 @@ Anyone can add this bot to their server - each server's data (characters, scores
 
 **2. Weekly announcement channel** (optional but recommended)
 ` + "`/config setting:Discord Weekly Announcement Channel ID value:#culvert`" + `
-The bot then keeps ONE message per week there with the full score table (edited in place), plus a thread with submission notes and personal-best shoutouts. Leave unset for no announcements at all.
+The bot then keeps ONE summary message per week there (coverage, top scores, guild total - edited in place), with the FULL table as the first comment of its thread (also edited in place), followed by submission notes and personal-best shoutouts. Any change - submission, /register, /unregister, /set-culvert, /reset-week - refreshes both. Leave unset for no announcements at all.
 
 **3. Track the roster**
 Members self-serve with ` + "`/register`" + ` (submitters can link anyone: ` + "`/register name:X user:@member`" + `). Submitting scores auto-tracks unknown names automatically, so a first screenshot submission builds the roster for you. ` + "`/unregister`" + ` handles leavers (history is kept).
