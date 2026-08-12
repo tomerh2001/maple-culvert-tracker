@@ -139,25 +139,24 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 			"`), which usually means an OCR misread. Retake the screenshot and resubmit, or fix individual scores with `/set-culvert`.")
 		return "", false
 	}
-	skippedTruncated := []string{}
+	// Names the game truncated with an ellipsis are recorded AS DECODED: an
+	// incomplete name beats a dropped score (owner decision). The receipt
+	// flags them so an admin can later /unregister the stub and /register the
+	// full name.
+	truncatedRecorded := []string{}
 	for _, e := range oc.merged {
 		if !e.Matched && e.Ellipsis {
-			// The game truncated this name with an ellipsis and it matches
-			// no tracked character: the raw decode is an INCOMPLETE name,
-			// and auto-tracking it would create a bogus character. Skip it
-			// with a note instead.
-			skippedTruncated = append(skippedTruncated, e.Name)
-			continue
+			truncatedRecorded = append(truncatedRecorded, e.Name)
 		}
 		scores[e.Name] = e.Score
 	}
 	// Defects are non-fatal (the gates above cover the fatal cases) but they
 	// must reach the receipt - never silently dropped.
 	warnings = defectsWarning(oc.defects)
-	if len(skippedTruncated) > 0 {
-		warnings += "\n:warning: Skipped " + strconv.Itoa(len(skippedTruncated)) +
-			" truncated name(s) matching no tracked character: `" + strings.Join(capList(skippedTruncated, 10), "`, `") +
-			"` - the screenshot cuts these names short, so they were NOT auto-tracked. Record them with `/set-culvert name:<full name>` or `/register` the full names and resubmit."
+	if len(truncatedRecorded) > 0 {
+		warnings += "\n:warning: " + strconv.Itoa(len(truncatedRecorded)) +
+			" name(s) look truncated in-game and were recorded as shown: `" + strings.Join(capList(truncatedRecorded, 10), "`, `") +
+			"` - to fix one later, `/unregister` the short name and `/register` the full one."
 	}
 	return warnings, true
 }
