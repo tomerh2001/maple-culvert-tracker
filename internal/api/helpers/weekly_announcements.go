@@ -108,12 +108,14 @@ type weekScore struct {
 }
 
 // weekScores returns the week's scores ordered by score desc, ranked.
+// Untracked characters (discord_user_id '1') keep their history rows but are
+// excluded from every rendered table.
 func weekScores(dbc *sql.DB, week time.Time) ([]weekScore, error) {
 	rows, err := dbc.Query(`
 		SELECT c.id, c.maple_character_name, c.discord_user_id, s.score
 		FROM character_culvert_scores s
 		JOIN characters c ON c.id = s.character_id
-		WHERE s.culvert_date = $1
+		WHERE s.culvert_date = $1 AND c.discord_user_id != '1'
 		ORDER BY s.score DESC, c.maple_character_name ASC`, week.Format(time.DateOnly))
 	if err != nil {
 		return nil, err
