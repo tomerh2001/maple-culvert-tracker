@@ -24,9 +24,11 @@ func (MapleController) POSTCulvert(c *gin.Context) {
 		c.AbortWithError(http.StatusBadRequest, err)
 		return
 	}
-	thisWeek := time.Now()
-	var err error
+	// Default: the current week by reset INSTANT; an explicit body.Week is a
+	// LABEL and must already be a key date.
+	thisWeek := cmdhelpers.CurrentCulvertWeek(time.Now())
 	if body.Week != "" {
+		var err error
 		thisWeek, err = time.Parse(time.DateOnly, body.Week)
 		if err != nil || thisWeek.Weekday() != cmdhelpers.GetCulvertResetDay(thisWeek) {
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
@@ -34,8 +36,8 @@ func (MapleController) POSTCulvert(c *gin.Context) {
 			})
 			return
 		}
+		thisWeek = cmdhelpers.GetCulvertResetDate(thisWeek)
 	}
-	thisWeek = cmdhelpers.GetCulvertResetDate(thisWeek)
 
 	changes := make([]cmdhelpers.ScoreChange, 0, len(body.Payload))
 	changedIDs := make([]int64, 0, len(body.Payload))

@@ -19,7 +19,7 @@ var confReadableNameAndDescriptions = map[redisInternalKey]HumanReadableDescript
 	OPTIONAL_CONF_MONTHLY_IMPROVEMENT_THRESHOLD:  {"Optional monthly improvement threshold", "Minimum improvement percentage to be listed as a top improver in the monthly report. (Default or empty: 10)"},
 	CONF_DISCORD_SUBMIT_ROLE_IDS:                 {"Submitter Role IDs", "Roles allowed to submit/parse scores and manage character links. Admins always can. Comma separated"},
 	CONF_DISCORD_SUBMIT_USER_IDS:                 {"Submitter User IDs", "Discord user IDs allowed to submit/parse scores and manage character links. Admins always can. Comma separated"},
-	OPTIONAL_CONF_ALLOW_SELF_REPORT:              {"Allow self-reported scores", "Toggle whether members can report their own culvert score with /report-score"},
+	OPTIONAL_CONF_ALLOW_SELF_REPORT:              {"Allow self-reported scores", "Legacy: the self-reporting command was removed; this setting currently has no effect"},
 }
 
 func GetHumanReadableDescriptions(k redisInternalKey) *HumanReadableDescriptions {

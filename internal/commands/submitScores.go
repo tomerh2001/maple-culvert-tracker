@@ -4,13 +4,10 @@ package commands
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,132 +20,23 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
-// messageLinkRe matches https://discord.com/channels/<guild>/<channel>/<message>
-// (any subdomain) or a bare "<channel>/<message>" pair.
-var messageLinkRe = regexp.MustCompile(`(?:https?://[a-z.]*discord(?:app)?\.com/channels/\d+/)?(\d+)/(\d+)$`)
+// pendingOverwriteTTL is how long a resubmit-to-confirm window stays open.
+const pendingOverwriteTTL = 10 * time.Minute
 
-func parseMessageLink(s string) (channelID, messageID string, ok bool) {
-	m := messageLinkRe.FindStringSubmatch(strings.TrimSpace(s))
-	if m == nil {
-		return "", "", false
-	}
-	return m[1], m[2], true
-}
-
-// submitScores submits weekly scores from either an attached scores file or a
-// linked message (scores file or screenshots via OCR).
-func submitScores(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if !requireSubmitPermission(s, i) {
-		return
-	}
-	var err error
-
-	r := deferReply(s, i, false)
-
-	culvertDate := helpers.GetCulvertResetDate(time.Now())
-	culvertDateStr := culvertDate.Format(time.DateOnly)
-	overwriteExisting := false
-	zeroMissing := false
-	autoTrackNew := true
-	messageLink := ""
-	var attachment *discordgo.MessageAttachment
-
-	for _, v := range i.ApplicationCommandData().Options {
-		switch v.Name {
-		case "scores-attachment":
-			if a, ok := i.ApplicationCommandData().Resolved.Attachments[v.Value.(string)]; ok {
-				attachment = a
-			}
-		case "message-link":
-			messageLink = v.StringValue()
-		case "auto-track-new":
-			autoTrackNew = v.BoolValue()
-		case "date":
-			culvertDateStr = strings.Trim(v.StringValue(), " ")
-			culvertDate, err = time.Parse(time.DateOnly, culvertDateStr)
-			if err != nil {
-				r.Edit("Invalid date format provided! Please use YYYY-MM-DD.")
-				return
-			}
-			if culvertDate.Weekday() != helpers.GetCulvertResetDay(time.Now()) {
-				r.Edit("The provided date is not a Wednesday! Culvert resets occur on Wednesdays.")
-				return
-			}
-		case "overwrite-existing":
-			overwriteExisting = v.BoolValue()
-		case "zero-missing":
-			zeroMissing = v.BoolValue()
-		}
-	}
-
-	scores := map[string]int{}
-	parseWarnings := ""
-	switch {
-	case attachment != nil:
-		errMsg := scoresFromJSONAttachment(attachment, scores)
-		if errMsg != "" {
-			r.Edit(errMsg)
-			return
-		}
-	case messageLink != "":
-		channelID, messageID, ok := parseMessageLink(messageLink)
-		if !ok {
-			r.Edit("That doesn't look like a message link. Right click a message -> Copy Message Link and paste it here.")
-			return
-		}
-		msg, err := s.ChannelMessage(channelID, messageID)
-		if err != nil {
-			r.Edit("Failed to fetch that message. Make sure the link is from this server and I can see the channel.")
-			return
-		}
-		var ok2 bool
-		parseWarnings, ok2 = scoresFromMessage(s, r, msg, scores)
-		if !ok2 {
-			return
-		}
-	default:
-		r.Edit("Provide either a `scores-attachment` file or a `message-link` to a message with screenshots.\nTip: you can also just right click that message -> Apps -> **Submit Scores**.")
-		return
-	}
-
-	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, overwriteExisting, zeroMissing, autoTrackNew, parseWarnings)
-}
-
-// scoresFromJSONAttachment downloads and parses a .txt/.json scores file into
-// the given map, returning a user-displayable error message on failure.
-func scoresFromJSONAttachment(attachment *discordgo.MessageAttachment, scores map[string]int) string {
-	if attachment.Size > 2048*1024 {
-		return "Attachment size exceeds 2MB limit! Please upload a smaller file."
-	}
-	if !strings.HasSuffix(attachment.Filename, ".txt") && !strings.HasSuffix(attachment.Filename, ".json") {
-		return "Invalid attachment format! Please upload a .txt or .json file."
-	}
-	resp, err := http.Get(attachment.URL)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return "Failed to download your attachment! Please try again."
-	}
-	defer resp.Body.Close()
-	bodyContent, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "Error reading attachment content! Please try again."
-	}
-	if err := json.Unmarshal(bodyContent, &scores); err != nil {
-		return "Failed to parse attachment content! Please ensure it's valid JSON format of { \"character-name\": 123, \"character-name-2\": 456 }."
-	}
-	return ""
-}
-
-// finalizeSubmitScores runs the shared score submission flow once a scores map
-// (character name -> score) has been parsed from a source: it plans the
-// submission against the tracked roster and existing week data, auto-tracks
-// unknown names (when enabled), applies the changes in one transaction and
-// replies with a receipt. parseWarnings ("" when clean) carries the source's
-// non-fatal parse defects into the receipt.
-func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]int, culvertDate time.Time, culvertDateStr string, overwriteExisting, zeroMissing, autoTrackNew bool, parseWarnings string) {
+// finalizeSubmitScores runs the score submission flow once a scores map
+// (character name -> score) has been parsed from the target message: it
+// canonicalizes unknown names against the official rankings, plans the
+// submission against the tracked roster and existing week data, applies the
+// resubmit-to-confirm overwrite rule, auto-tracks unknown names, applies the
+// changes and replies with a text-only receipt. targetMessageID scopes the
+// pending overwrite confirmation to the exact message being resubmitted.
+func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, targetMessageID string, submitted map[string]int, week time.Time, parseWarnings string) {
 	if len(submitted) == 0 {
 		r.Edit("Nothing was parsed from that input - no changes were made.")
 		return
 	}
+	weekStr := week.Format(time.DateOnly)
+	weekLabel := helpers.FormatWeekLabel(week, time.Now())
 
 	characters, rosterMeta, err := helpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB)
 	if err != nil {
@@ -164,7 +52,7 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]i
 			characterIDs = append(characterIDs, Int64(v.ID))
 		}
 
-		stmt := SELECT(Characters.ID.AS("id"), Characters.MapleCharacterName.AS("maple_character_name"), CharacterCulvertScores.Score.AS("score")).FROM(Characters.LEFT_JOIN(CharacterCulvertScores, Characters.ID.EQ(CharacterCulvertScores.CharacterID).AND(CharacterCulvertScores.CulvertDate.EQ(DateT(culvertDate))))).WHERE(Characters.ID.IN(characterIDs...))
+		stmt := SELECT(Characters.ID.AS("id"), Characters.MapleCharacterName.AS("maple_character_name"), CharacterCulvertScores.Score.AS("score")).FROM(Characters.LEFT_JOIN(CharacterCulvertScores, Characters.ID.EQ(CharacterCulvertScores.CharacterID).AND(CharacterCulvertScores.CulvertDate.EQ(DateT(week))))).WHERE(Characters.ID.IN(characterIDs...))
 
 		trackedCharacterScores := []struct {
 			ID                 int
@@ -189,20 +77,41 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]i
 		}
 	}
 
-	plan := planSubmission(tracked, submitted, overwriteExisting, zeroMissing, autoTrackNew)
+	// Canonicalize would-be-new names against the official rankings before
+	// planning: exact hits adopt the rankings spelling, l/I bar mixups may
+	// resolve onto an already-tracked character, and unresolved names keep
+	// their decode with a "spelling unverified" receipt note.
+	unverified := canonicalizeSubmitted(submitted, tracked)
 
-	if len(plan.Conflicts) > 0 {
-		msg := fmt.Sprintf("%d existing score(s) for %s differ from the submitted values (see conflicts.txt). Set the `overwrite-existing` option to `True` to overwrite them. No changes were made.",
-			len(plan.Conflicts), culvertDateStr)
-		r.Edit(msg, &discordgo.File{
-			Name:        "conflicts.txt",
-			ContentType: "text/plain",
-			Reader:      strings.NewReader(formatConflictsTable(plan.Conflicts)),
-		})
+	plan := planSubmission(tracked, submitted, false)
+
+	pendingKey := apiredis.PendingOverwriteKey(i.Member.User.ID, targetMessageID, weekStr)
+	pendingMatch := pendingKey.GetWithDefault(apiredis.RedisDB, "") != ""
+	overwrite, storePending := overwriteDecision(len(plan.Conflicts) > 0, pendingMatch)
+
+	if storePending {
+		if err := pendingKey.SetEx(apiredis.RedisDB, "1", pendingOverwriteTTL); err != nil {
+			log.Println("submitScores: storing pending overwrite confirmation failed:", err)
+		}
+		msg := fmt.Sprintf("%d existing score(s) for %s differ from the submitted values - no changes were made.",
+			len(plan.Conflicts), weekLabel)
+		msg += "\nRight-click -> **Submit Scores** on the same message again within 10 minutes to overwrite these scores."
+		r.EditWithTable(msg, formatConflictsTable(plan.Conflicts))
 		return
+	}
+	if overwrite {
+		plan = planSubmission(tracked, submitted, true)
+	}
+
+	existingCount := 0
+	for _, t := range tracked {
+		if t.Existing != nil {
+			existingCount++
+		}
 	}
 
 	autoTracked := []string{}
+	autoScored := 0
 	if len(plan.AutoTrack) > 0 {
 		names := make([]string, 0, len(plan.AutoTrack))
 		for _, e := range plan.AutoTrack {
@@ -222,42 +131,102 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, submitted map[string]i
 				continue
 			}
 			plan.Changes = append(plan.Changes, helpers.ScoreChange{CharacterID: id, Score: e.Score})
-			plan.New++
+			autoScored++
 		}
 	}
 
-	if err := helpers.UpsertCulvertScores(db.DB, culvertDate, plan.Changes); err != nil {
+	if err := helpers.UpsertCulvertScores(db.DB, week, plan.Changes); err != nil {
 		log.Println("submitScores: upsert failed:", err)
 		r.Edit("Score submission failed while writing to the database - no scores were written. See server logs for details.")
 		return
 	}
+	// Any successful apply consumes/invalidates the pending confirmation.
+	if err := pendingKey.Del(apiredis.RedisDB); err != nil && !errors.Is(err, apiredis.ErrNoRedis) {
+		log.Println("submitScores: clearing pending overwrite confirmation failed:", err)
+	}
 
-	receipt := fmt.Sprintf("Submitted %d scores (%d new, %d overwritten, %d zero-filled) for week %s.",
-		len(plan.Changes), plan.New, plan.Overwritten, plan.ZeroFilled, culvertDateStr)
+	// Receipt: recorded/new/overwritten/auto-tracked + coverage +
+	// announcement status, all labeled with the week helper. Text only.
+	receipt := fmt.Sprintf("Recorded %d score(s) for %s.", len(plan.Changes), weekLabel)
+	if len(plan.NewNames) > 0 {
+		receipt += fmt.Sprintf("\nNew (%d): `%s`", len(plan.NewNames), strings.Join(capList(plan.NewNames, 20), "`, `"))
+	}
+	if len(plan.OverwrittenNames) > 0 {
+		receipt += fmt.Sprintf("\nOverwritten (%d): `%s`", len(plan.OverwrittenNames), strings.Join(capList(plan.OverwrittenNames, 20), "`, `"))
+	}
 	if len(autoTracked) > 0 {
-		receipt += fmt.Sprintf("\nAuto-tracked %d new character(s): %s (members can `/register` to claim them)",
-			len(autoTracked), "`"+strings.Join(capList(autoTracked, 20), "`, `")+"`")
+		receipt += fmt.Sprintf("\nAuto-tracked (%d): `%s` (members can `/register` to claim them)",
+			len(autoTracked), strings.Join(capList(autoTracked, 20), "`, `"))
 	}
-	if len(plan.Skipped) > 0 {
-		names := make([]string, 0, len(plan.Skipped))
-		for _, e := range plan.Skipped {
-			names = append(names, e.Name)
-		}
-		receipt += fmt.Sprintf("\nSkipped %d untracked name(s): %s\nTrack them with: `/track-characters names:%s`",
-			len(names), "`"+strings.Join(capList(names, 20), "`, `")+"`", strings.Join(names, ","))
+	if len(unverified) > 0 {
+		receipt += "\n:warning: Spelling unverified (not found on the official rankings): `" +
+			strings.Join(capList(unverified, 10), "`, `") + "` - fix mistakes with `/set-culvert` after `/unregister`-ing the typo."
 	}
+	scoredAfter := existingCount + len(plan.NewNames) + autoScored
+	totalTracked := len(tracked) + len(autoTracked)
+	receipt += fmt.Sprintf("\nCoverage: %d of %d tracked characters have a score for this week.", scoredAfter, totalTracked)
 
 	if len(plan.Changes) > 0 {
 		changedIDs := make([]int64, 0, len(plan.Changes))
 		for _, c := range plan.Changes {
 			changedIDs = append(changedIDs, c.CharacterID)
 		}
-		receipt += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, culvertDate, changedIDs))
+		receipt += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, week, changedIDs))
 	}
 	receipt += parseWarnings
 	receipt += rosterMeta.StalenessWarning()
 
-	r.Edit(receipt)
+	r.EditChunked(receipt)
+}
+
+// canonicalizeSubmitted rewrites submitted keys that match no tracked
+// character: rankings-verified spellings replace the decode (possibly folding
+// onto a tracked character), unresolved names stay and are returned as the
+// unverified list. One rankings cache serves the whole submission.
+func canonicalizeSubmitted(submitted map[string]int, tracked []trackedScore) []string {
+	return canonicalizeSubmittedWith(submitted, tracked, rankingsLookup())
+}
+
+// canonicalizeSubmittedWith is the lookup-injected core (unit-tested with a
+// faked rankings lookup).
+func canonicalizeSubmittedWith(submitted map[string]int, tracked []trackedScore, lookup func(string) (string, bool)) (unverified []string) {
+	trackedByLower := map[string]string{}
+	for _, t := range tracked {
+		trackedByLower[strings.ToLower(t.Name)] = t.Name
+	}
+	// Snapshot the keys: the loop rewrites map entries as names resolve.
+	names := make([]string, 0, len(submitted))
+	for name := range submitted {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		score := submitted[name]
+		if _, ok := trackedByLower[strings.ToLower(name)]; ok {
+			continue
+		}
+		canonical, verified := canonicalizeName(name, lookup)
+		if !verified {
+			unverified = append(unverified, name)
+			continue
+		}
+		if canonical == name {
+			continue
+		}
+		// Adopt the rankings spelling; when it resolves onto a tracked
+		// character fold the score onto that name (never clobbering a score
+		// that character already has in this submission).
+		target := canonical
+		if t, ok := trackedByLower[strings.ToLower(canonical)]; ok {
+			target = t
+		}
+		if _, exists := submitted[target]; !exists {
+			delete(submitted, name)
+			submitted[target] = score
+		}
+	}
+	sort.Strings(unverified)
+	return unverified
 }
 
 // announcementStatusLine renders the weekly-announcement outcome for a receipt.

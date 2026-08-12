@@ -35,7 +35,26 @@ var (
 	// DATA_COMMAND_REGISTRATION_STATUS holds the outcome of the last slash
 	// command registration pass: "ok" on success, otherwise the error string.
 	DATA_COMMAND_REGISTRATION_STATUS = redisInternalKey{"DATA_COMMAND_REGISTRATION_STATUS", EditableTypeNone, false}
+
+	// DATA_SUBMIT_OVERWRITE_PENDING is the name PREFIX for the
+	// resubmit-to-confirm overwrite flow: when a Submit Scores run hits
+	// conflicting existing scores, a pending-confirmation key scoped to
+	// (submitter user id, target message id, week) is stored with a short TTL;
+	// a second submission matching the key applies with overwrite. Use
+	// PendingOverwriteKey to build the scoped key - the prefix itself is never
+	// read or written.
+	DATA_SUBMIT_OVERWRITE_PENDING = redisInternalKey{"DATA_SUBMIT_OVERWRITE_PENDING", EditableTypeNone, false}
 )
+
+// PendingOverwriteKey returns the internal key holding a pending
+// overwrite confirmation for one (submitter, message, week) triple. Dynamic:
+// deliberately not in KeysMap.
+func PendingOverwriteKey(submitterID, messageID, week string) redisInternalKey {
+	return redisInternalKey{
+		Name:         DATA_SUBMIT_OVERWRITE_PENDING.Name + ":" + submitterID + ":" + messageID + ":" + week,
+		EditableType: EditableTypeNone,
+	}
+}
 
 var KeysMap = map[string]redisInternalKey{}
 

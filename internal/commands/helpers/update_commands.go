@@ -50,13 +50,19 @@ func updateGuildCommands(s *discordgo.Session, guildID string, commands []*disco
 
 	for _, appCommand := range commands {
 		if existingCommand, ok := m[appCommand.Name]; ok {
-			needUpdate := false
-			// Update if options are different
+			// Update if options are different. A remote command with EXTRA
+			// options (removed from the definition) must sync too, so a
+			// count mismatch alone forces the update.
+			needUpdate := len(existingCommand.Options) != len(appCommand.Options) ||
+				existingCommand.Description != appCommand.Description
 			o := map[string]*discordgo.ApplicationCommandOption{}
 			for _, existingOption := range existingCommand.Options {
 				o[existingOption.Name] = existingOption
 			}
 			for _, appCommandOption := range appCommand.Options {
+				if needUpdate {
+					break
+				}
 				rawCmdOptions, err := json.Marshal(appCommandOption)
 				if err != nil {
 					return err

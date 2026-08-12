@@ -21,20 +21,16 @@ func TestPlanSubmission(t *testing.T) {
 
 	type want struct {
 		changes     map[int64]int // characterID -> score upserted
-		newCount    int
-		overwritten int
-		zeroFilled  int
+		newNames    []string
+		overwritten []string
 		conflicts   []scoreConflict
 		autoTrack   []string
-		skipped     []string
 	}
 	cases := []struct {
-		name        string
-		submitted   map[string]int
-		overwrite   bool
-		zeroMissing bool
-		autoTrack   bool
-		want        want
+		name      string
+		submitted map[string]int
+		overwrite bool
+		want      want
 	}{
 		{
 			name:      "empty input plans nothing",
@@ -44,7 +40,7 @@ func TestPlanSubmission(t *testing.T) {
 		{
 			name:      "new score inserts",
 			submitted: map[string]int{"Alice": 100},
-			want:      want{changes: map[int64]int{1: 100}, newCount: 1},
+			want:      want{changes: map[int64]int{1: 100}, newNames: []string{"Alice"}},
 		},
 		{
 			name:      "identical resubmission is a no-op",
@@ -66,7 +62,7 @@ func TestPlanSubmission(t *testing.T) {
 		{
 			name:      "all conflicts are collected, not just the first",
 			submitted: map[string]int{"Bob": 0, "Dave": 100, "Alice": 50},
-			want: want{changes: map[int64]int{1: 50}, newCount: 1,
+			want: want{changes: map[int64]int{1: 50}, newNames: []string{"Alice"},
 				conflicts: []scoreConflict{
 					{Name: "Bob", Existing: 500, Incoming: 0},
 					{Name: "Dave", Existing: 900, Incoming: 100},
@@ -76,60 +72,41 @@ func TestPlanSubmission(t *testing.T) {
 			name:      "differing value with overwrite overwrites",
 			submitted: map[string]int{"Bob": 600},
 			overwrite: true,
-			want:      want{changes: map[int64]int{2: 600}, overwritten: 1},
+			want:      want{changes: map[int64]int{2: 600}, overwritten: []string{"Bob"}},
 		},
 		{
 			name:      "0 downgrade with overwrite overwrites",
 			submitted: map[string]int{"Bob": 0},
 			overwrite: true,
-			want:      want{changes: map[int64]int{2: 0}, overwritten: 1},
+			want:      want{changes: map[int64]int{2: 0}, overwritten: []string{"Bob"}},
 		},
 		{
-			name:      "absent tracked characters are never touched by default",
+			name:      "absent tracked characters are never touched (no zero-filling exists)",
 			submitted: map[string]int{"Bob": 500},
 			want:      want{changes: map[int64]int{}},
 		},
 		{
-			name:        "zero-missing fills absent characters without a score",
-			submitted:   map[string]int{"Bob": 500},
-			zeroMissing: true,
-			// Alice (no score) is zero-filled; Carol already 0 is a no-op;
-			// Dave (900, absent) needs overwrite -> conflict.
-			want: want{changes: map[int64]int{1: 0}, zeroFilled: 1,
-				conflicts: []scoreConflict{{Name: "Dave", Existing: 900, Incoming: 0}}},
+			name:      "absent tracked characters are never touched even with overwrite",
+			submitted: map[string]int{"Bob": 600},
+			overwrite: true,
+			want:      want{changes: map[int64]int{2: 600}, overwritten: []string{"Bob"}},
 		},
 		{
-			name:        "zero-missing with overwrite downgrades absent non-zero scores",
-			submitted:   map[string]int{"Bob": 500},
-			zeroMissing: true,
-			overwrite:   true,
-			want:        want{changes: map[int64]int{1: 0, 4: 0}, zeroFilled: 2},
-		},
-		{
-			name:      "unmatched names land in Skipped (sorted) when auto-track is off",
+			name:      "unmatched names always land in AutoTrack (sorted)",
 			submitted: map[string]int{"Zed": 10, "Alice": 100, "Mallory": 20},
-			want: want{changes: map[int64]int{1: 100}, newCount: 1,
-				skipped: []string{"Mallory", "Zed"}},
-		},
-		{
-			name:      "unmatched names land in AutoTrack (sorted) when auto-track is on",
-			submitted: map[string]int{"Zed": 10, "Alice": 100, "Mallory": 20},
-			autoTrack: true,
 			// Matched rows are still planned; the caller creates the AutoTrack
 			// characters and appends their score changes itself.
-			want: want{changes: map[int64]int{1: 100}, newCount: 1,
+			want: want{changes: map[int64]int{1: 100}, newNames: []string{"Alice"},
 				autoTrack: []string{"Mallory", "Zed"}},
 		},
 		{
-			name:      "auto-track with an all-unmatched submission plans no direct changes",
+			name:      "an all-unmatched submission plans no direct changes",
 			submitted: map[string]int{"Zed": 10, "Mallory": 20},
-			autoTrack: true,
 			want:      want{changes: map[int64]int{}, autoTrack: []string{"Mallory", "Zed"}},
 		},
 		{
 			name:      "auto-track never hides conflicts on matched rows",
 			submitted: map[string]int{"Bob": 600, "Zed": 10},
-			autoTrack: true,
 			want: want{changes: map[int64]int{},
 				conflicts: []scoreConflict{{Name: "Bob", Existing: 500, Incoming: 600}},
 				autoTrack: []string{"Zed"}},
@@ -138,7 +115,7 @@ func TestPlanSubmission(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := planSubmission(tracked, c.submitted, c.overwrite, c.zeroMissing, c.autoTrack)
+			p := planSubmission(tracked, c.submitted, c.overwrite)
 
 			gotChanges := map[int64]int{}
 			for _, ch := range p.Changes {
@@ -152,13 +129,15 @@ func TestPlanSubmission(t *testing.T) {
 					t.Errorf("change for character %d = %d (present %v), want %d", id, got, ok, score)
 				}
 			}
-			if p.New != c.want.newCount || p.Overwritten != c.want.overwritten || p.ZeroFilled != c.want.zeroFilled {
-				t.Errorf("counts new/overwritten/zeroFilled = %d/%d/%d, want %d/%d/%d",
-					p.New, p.Overwritten, p.ZeroFilled, c.want.newCount, c.want.overwritten, c.want.zeroFilled)
+			if got := strings.Join(p.NewNames, ","); got != strings.Join(c.want.newNames, ",") {
+				t.Errorf("NewNames = %v, want %v", p.NewNames, c.want.newNames)
 			}
-			if len(p.Changes) != c.want.newCount+c.want.overwritten+c.want.zeroFilled {
-				t.Errorf("len(Changes) = %d, want new+overwritten+zeroFilled = %d",
-					len(p.Changes), c.want.newCount+c.want.overwritten+c.want.zeroFilled)
+			if got := strings.Join(p.OverwrittenNames, ","); got != strings.Join(c.want.overwritten, ",") {
+				t.Errorf("OverwrittenNames = %v, want %v", p.OverwrittenNames, c.want.overwritten)
+			}
+			if len(p.Changes) != len(c.want.newNames)+len(c.want.overwritten) {
+				t.Errorf("len(Changes) = %d, want new+overwritten = %d",
+					len(p.Changes), len(c.want.newNames)+len(c.want.overwritten))
 			}
 			if len(p.Conflicts) != len(c.want.conflicts) {
 				t.Errorf("conflicts = %v, want %v", p.Conflicts, c.want.conflicts)
@@ -183,8 +162,32 @@ func TestPlanSubmission(t *testing.T) {
 			if got := names(p.AutoTrack); strings.Join(got, ",") != strings.Join(c.want.autoTrack, ",") {
 				t.Errorf("autoTrack = %v, want %v", got, c.want.autoTrack)
 			}
-			if got := names(p.Skipped); strings.Join(got, ",") != strings.Join(c.want.skipped, ",") {
-				t.Errorf("skipped = %v, want %v", got, c.want.skipped)
+		})
+	}
+}
+
+// TestOverwriteDecision pins the pure resubmit-to-confirm rule: a pending key
+// matching this (submitter, message, week) turns conflicts into an overwrite;
+// otherwise conflicts store a pending confirmation and nothing is applied.
+func TestOverwriteDecision(t *testing.T) {
+	cases := []struct {
+		name             string
+		hasConflicts     bool
+		pendingMatch     bool
+		wantOverwrite    bool
+		wantStorePending bool
+	}{
+		{"no conflicts, nothing pending", false, false, false, false},
+		{"no conflicts ignores a stale pending key", false, true, false, false},
+		{"conflicts without pending key store a confirmation", true, false, false, true},
+		{"conflicts with matching pending key overwrite", true, true, true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			overwrite, storePending := overwriteDecision(c.hasConflicts, c.pendingMatch)
+			if overwrite != c.wantOverwrite || storePending != c.wantStorePending {
+				t.Errorf("overwriteDecision(%v, %v) = (%v, %v), want (%v, %v)",
+					c.hasConflicts, c.pendingMatch, overwrite, storePending, c.wantOverwrite, c.wantStorePending)
 			}
 		})
 	}
@@ -199,14 +202,5 @@ func TestFormatConflictsTableListsAllColumns(t *testing.T) {
 		if !strings.Contains(got, expected) {
 			t.Errorf("conflicts table does not contain %q:\n%s", expected, got)
 		}
-	}
-}
-
-func TestTrackedSetOf(t *testing.T) {
-	all := []helpers.ScoreEntry{{Name: "A"}, {Name: "B"}, {Name: "C"}}
-	unmatched := []helpers.ScoreEntry{{Name: "B"}}
-	set := trackedSetOf(all, unmatched)
-	if !set["A"] || set["B"] || !set["C"] {
-		t.Fatalf("trackedSetOf = %v, want A and C tracked, B not", set)
 	}
 }

@@ -277,7 +277,7 @@ func checkWeeklyThread() (CheckResult, bool) {
 	if db.DB == nil {
 		return c, false
 	}
-	week := GetCulvertResetDate(time.Now()).Format(time.DateOnly)
+	week := CurrentCulvertWeek(time.Now()).Format(time.DateOnly)
 	var threadID string
 	err := db.DB.QueryRow(
 		`SELECT thread_id FROM weekly_announcements WHERE culvert_date = $1`, week).Scan(&threadID)
@@ -296,14 +296,15 @@ func checkWeeklyThread() (CheckResult, bool) {
 	return c, true
 }
 
-// checkSubmitterConfig warns when nobody besides admins can submit scores.
+// checkSubmitterConfig reports who can submit scores. Admins-only submission
+// is the intended DEFAULT, so an empty submitter config is a PASS (it must
+// never show up in the boot report, which only posts warns/fails).
 func checkSubmitterConfig() CheckResult {
 	c := CheckResult{Name: "Submitters"}
 	roles := strings.TrimSpace(apiredis.CONF_DISCORD_SUBMIT_ROLE_IDS.GetWithDefault(apiredis.RedisDB, ""))
 	users := strings.TrimSpace(apiredis.CONF_DISCORD_SUBMIT_USER_IDS.GetWithDefault(apiredis.RedisDB, ""))
 	if roles == "" && users == "" {
-		c.Status, c.Detail = CheckWarn, "no submitter roles or users configured - only admins can submit scores"
-		c.Fix = "`/config setting:Submitter Role IDs role:@YourStaffRole`"
+		c.Status, c.Detail = CheckPass, "only admins can submit (default); optionally add submitter roles via /config"
 		return c
 	}
 	c.Status, c.Detail = CheckPass, "submitter roles/users configured"

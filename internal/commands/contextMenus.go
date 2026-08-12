@@ -38,18 +38,18 @@ func collectImageURLs(msg *discordgo.Message) []string {
 	return imageURLs
 }
 
-// submitScoresFromMessage is the one-step message context menu submission:
-// right click a message -> Apps -> Submit Scores. If the message carries a
-// pre-parsed .txt/.json scores attachment it is submitted directly, otherwise
-// the image attachments are OCR'd and the result is submitted. Scores go to
-// the current culvert week; existing scores are never overwritten and absent
-// characters are never zero-filled - use /submit-scores for corrections.
-// Unknown parsed names are auto-tracked (the /submit-scores default).
+// submitScoresFromMessage is THE submission path: right click a message ->
+// Apps -> Submit Scores. If the message carries a pre-parsed .txt/.json
+// scores attachment it is submitted directly, otherwise the image attachments
+// are OCR'd and the result is submitted. Scores go to the current culvert
+// week; unknown names are always auto-tracked; nothing is ever zero-filled.
+// Existing differing scores trigger the resubmit-to-confirm overwrite flow
+// (see finalizeSubmitScores). The receipt is ephemeral.
 func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !requireSubmitPermission(s, i) {
 		return
 	}
-	r := deferReply(s, i, false)
+	r := deferReply(s, i, true)
 
 	msg := targetMessage(s, i)
 	if msg == nil {
@@ -57,8 +57,7 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	culvertDate := helpers.GetCulvertResetDate(time.Now())
-	culvertDateStr := culvertDate.Format(time.DateOnly)
+	week := helpers.CurrentCulvertWeek(time.Now())
 
 	scores := map[string]int{}
 	parseWarnings, ok := scoresFromMessage(s, r, msg, scores)
@@ -66,14 +65,14 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	finalizeSubmitScores(s, r, scores, culvertDate, culvertDateStr, false, false, true, parseWarnings)
+	finalizeSubmitScores(s, r, i, msg.ID, scores, week, parseWarnings)
 }
 
 // scoresFromMessage fills scores from a message: a pre-parsed .txt/.json
-// scores file when present (e.g. the gpq_scores.json produced by Parse
-// Images), otherwise OCR of its image attachments. On failure it edits the
-// (deferred) interaction response itself and returns ok=false. On success,
-// warnings carries any non-fatal parse defects for the caller's receipt.
+// scores file when present, otherwise OCR of its image attachments. On
+// failure it edits the (deferred) interaction response itself and returns
+// ok=false. On success, warnings carries any non-fatal parse defects for the
+// caller's receipt.
 func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, scores map[string]int) (warnings string, ok bool) {
 	var scoresAttachment *discordgo.MessageAttachment
 	for _, a := range msg.Attachments {
@@ -115,19 +114,19 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 	// Submission safety gates: an incomplete (time-limited) or internally
 	// conflicting parse must never be written to the database.
 	if oc.truncated {
-		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again, or run `/parse-images` and submit the verified JSON instead.")
+		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again, or crop the screenshot to the Member Participation Status window and resubmit.")
 		return "", false
 	}
 	if len(oc.conflicts) > 0 {
 		r.Edit("Nothing submitted: the images disagree on some characters' scores:\n- " +
 			strings.Join(capList(oc.conflicts, 10), "\n- ") +
-			"\nRun `/parse-images` on the message link, verify the JSON, then submit that instead.")
+			"\nRetake the overlapping screenshots and resubmit, or fix individual scores with `/set-culvert`.")
 		return "", false
 	}
 	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
 		r.Edit("Nothing submitted: parsed scores are not in descending order (`" +
 			oc.merged[idx-1].Name + "` -> `" + oc.merged[idx].Name +
-			"`), which usually means an OCR misread. Run `/parse-images` on the message link, verify the JSON, then submit that instead.")
+			"`), which usually means an OCR misread. Retake the screenshot and resubmit, or fix individual scores with `/set-culvert`.")
 		return "", false
 	}
 	skippedTruncated := []string{}
@@ -148,7 +147,7 @@ func scoresFromMessage(s *discordgo.Session, r *reply, msg *discordgo.Message, s
 	if len(skippedTruncated) > 0 {
 		warnings += "\n:warning: Skipped " + strconv.Itoa(len(skippedTruncated)) +
 			" truncated name(s) matching no tracked character: `" + strings.Join(capList(skippedTruncated, 10), "`, `") +
-			"` - the screenshot cuts these names short, so they were NOT auto-tracked. Track the full names with `/track-characters` and resubmit."
+			"` - the screenshot cuts these names short, so they were NOT auto-tracked. Record them with `/set-culvert name:<full name>` or `/register` the full names and resubmit."
 	}
 	return warnings, true
 }

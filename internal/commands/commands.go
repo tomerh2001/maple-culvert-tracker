@@ -4,19 +4,18 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-var culvertMinWeeks = float64(4)
-var exportCsvMinWeeks = float64(4)
-var reportScoreMin = float64(0)
+var setCulvertScoreMin = float64(0)
 
+// Commands is the ENTIRE deliberately-small surface: 9 slash commands and 2
+// context menus. Score submission has exactly one path (right click a
+// screenshot message -> Apps -> Submit Scores); /set-culvert covers manual
+// corrections. UpdateCommands deletes anything else that is still registered
+// remotely.
 var Commands = []*discordgo.ApplicationCommand{
 	// ── Everyone ────────────────────────────────────────────────────────────
 	{
-		Name:        "help",
+		Name:        "culvert-help",
 		Description: "How to use this bot",
-	},
-	{
-		Name:        "ping",
-		Description: "Check the bot is alive",
 	},
 	{
 		Name:        "register",
@@ -25,7 +24,7 @@ var Commands = []*discordgo.ApplicationCommand{
 			{
 				Required:    true,
 				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "character-name",
+				Name:        "name",
 				Description: "The in-game character name",
 			},
 			{
@@ -34,238 +33,77 @@ var Commands = []*discordgo.ApplicationCommand{
 				Name:        "user",
 				Description: "Register for this member instead of yourself (submitters only)",
 			},
+		},
+	},
+	{
+		Name:        "unregister",
+		Description: "Untrack a character by name, or all of a member's characters (history kept)",
+		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "skip-name-check",
-				Description: "Skip character name check with maple rankings",
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "name",
+				Description: "Untrack this character (yours; submitters can untrack any)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionUser,
+				Name:        "user",
+				Description: "Untrack ALL characters of this member (submitters only; default: yourself)",
 			},
 		},
 	},
 	{
 		Name:        "culvert",
-		Description: "Culvert progression chart: yours, another member's, or any character's",
+		Description: "Culvert progression chart: yours, a member's, or any tracked character's",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionUser,
-				Name:        "user",
-				Description: "Show this member's culvert instead of your own",
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "name",
+				Description: "A character name or a @mention (default: you)",
 			},
 			{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "character-name",
-				Description: "Show this character (any tracked character)",
+				Name:        "from",
+				Description: "Start date: YYYY-MM-DD or a Discord timestamp",
 			},
 			{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "date",
-				Description: "Date in YYYY-MM-DD format to check historical data",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionInteger,
-				MinValue:    &culvertMinWeeks,
-				MaxValue:    52 * 5,
-				Name:        "weeks",
-				Description: "Number of weeks to display in the graph (default 8)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "y-axis-start-at-0",
-				Description: "Start the Y axis at 0 for better visualization",
+				Name:        "to",
+				Description: "End date: YYYY-MM-DD or a Discord timestamp",
 			},
 		},
 	},
 	{
-		Name:        "leaderboard",
-		Description: "Guild culvert leaderboard for a week, or a whole-guild progression chart",
+		Name:        "culvert-board",
+		Description: "Guild culvert leaderboard for a week (default: this week)",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "date",
-				Description: "Date in YYYY-MM-DD format to check historical data",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "order-by",
-				Description: "Order the results by name or score (default score)",
-				Choices: []*discordgo.ApplicationCommandOptionChoice{
-					{Name: "Character name", Value: "name"},
-					{Name: "Score", Value: "score"},
-				},
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "chart",
-				Description: "Show a whole-guild progression chart instead of a table",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionInteger,
-				MinValue:    &culvertMinWeeks,
-				MaxValue:    52,
-				Name:        "weeks",
-				Description: "Number of weeks in the chart (default 8, chart only)",
-			},
-		},
-	},
-	{
-		Name:        "personal-bests",
-		Description: "List personal bests for all active characters",
-	},
-	{
-		Name:        "list-characters",
-		Description: "List all characters being tracked in the guild",
-	},
-	{
-		Name:        "report-score",
-		Description: "Report your own culvert score for this week (if enabled by admins)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    true,
-				Type:        discordgo.ApplicationCommandOptionInteger,
-				MinValue:    &reportScoreMin,
-				Name:        "score",
-				Description: "Your culvert score this week",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "character-name",
-				Description: "Which of your characters (only needed if you have several)",
+				Description: "Week to show: YYYY-MM-DD or a Discord timestamp",
 			},
 		},
 	},
 	// ── Submitters / admins ─────────────────────────────────────────────────
 	{
-		Name:        "submit-scores",
-		Description: "Submit weekly scores from screenshots or a parsed scores file",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionAttachment,
-				Name:        "scores-attachment",
-				Description: "A .json/.txt scores file (from /parse-images)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "message-link",
-				Description: "Link to a message with score screenshots (or a scores file)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "date",
-				Description: "Culvert week (YYYY-MM-DD, a Wednesday). Defaults to this week",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "overwrite-existing",
-				Description: "Overwrite scores that already exist for that week",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "zero-missing",
-				Description: "Insert a 0 for tracked characters absent from the input (default off)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "auto-track-new",
-				Description: "Auto-track unknown parsed names and record their scores (default on)",
-			},
-		},
-	},
-	{
-		Name:        "track-characters",
-		Description: "Bulk-track characters by name (unlinked; members can /register to claim them)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "names",
-				Description: "Character names, comma separated (e.g. Alice,Bob,Carol)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionAttachment,
-				Name:        "names-attachment",
-				Description: "A .txt file with one character name per line (or comma separated)",
-			},
-		},
-	},
-	{
-		Name:        "parse-images",
-		Description: "OCR guild score screenshots into a scores file (without submitting)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    true,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "message-link",
-				Description: "Link to the message holding the screenshot(s)",
-			},
-		},
-	},
-	{
-		Name:        "untrack-character",
-		Description: "Stop tracking a character (history is kept)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    true,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "character-name",
-				Description: "Character to untrack",
-			},
-		},
-	},
-	{
-		Name:        "rename-character",
-		Description: "Rename a tracked character (after an in-game name change)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    true,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "character-name",
-				Description: "Current tracked name",
-			},
-			{
-				Required:    true,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "new-name",
-				Description: "New character name",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "skip-name-check",
-				Description: "Skip character name check with maple rankings",
-			},
-		},
-	},
-	{
-		Name:        "set-score",
+		Name:        "set-culvert",
 		Description: "Manually set one character's culvert score for a week",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Required:    true,
 				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "character-name",
-				Description: "Tracked character name",
+				Name:        "name",
+				Description: "Character name (unknown names are tracked automatically)",
 			},
 			{
 				Required:    true,
 				Type:        discordgo.ApplicationCommandOptionInteger,
-				MinValue:    &reportScoreMin,
+				MinValue:    &setCulvertScoreMin,
 				Name:        "score",
 				Description: "The culvert score",
 			},
@@ -273,33 +111,7 @@ var Commands = []*discordgo.ApplicationCommand{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "date",
-				Description: "Culvert week (YYYY-MM-DD, a Wednesday). Defaults to this week",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionBoolean,
-				Name:        "create-if-missing",
-				Description: "Track the character (unlinked) if it isn't tracked yet (default off)",
-			},
-		},
-	},
-	{
-		Name:        "export-csv",
-		Description: "Export weeks of data to csv format (Compatible with all spreadsheet software)",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionInteger,
-				MinValue:    &exportCsvMinWeeks,
-				MaxValue:    52,
-				Name:        "weeks",
-				Description: "Number of weeks to export",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "date",
-				Description: "Date in YYYY-MM-DD format to export historical data",
+				Description: "Week: YYYY-MM-DD or a Discord timestamp (default: this week)",
 			},
 		},
 	},
@@ -318,19 +130,7 @@ var Commands = []*discordgo.ApplicationCommand{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "value",
-				Description: "New value (empty to view; ids comma separated for lists)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionChannel,
-				Name:        "channel",
-				Description: "Pick a channel (for channel settings)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionRole,
-				Name:        "role",
-				Description: "Pick a role (for role settings; appends to lists)",
+				Description: "New value (empty to view; #channel/@role mentions and comma lists work)",
 			},
 		},
 	},
@@ -342,22 +142,7 @@ var Commands = []*discordgo.ApplicationCommand{
 		Name:        "health",
 		Description: "ADMINS: Run the bot's health checks (database, Discord permissions, config)",
 	},
-	{
-		Name:        "reset",
-		Description: "ADMINS: Delete ALL tracked characters and scores, start from scratch",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "confirm",
-				Description: "Type DELETE EVERYTHING to confirm",
-			},
-		},
-	},
 	// ── Context menus (right click -> Apps) ─────────────────────────────────
-	// Submit Scores is deliberately the ONLY message menu: parsing without
-	// submitting stays available as /parse-images, and one obvious menu beats
-	// two near-identical ones.
 	{
 		Name: "Submit Scores",
 		Type: discordgo.MessageApplicationCommand,
