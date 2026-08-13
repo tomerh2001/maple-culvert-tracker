@@ -30,7 +30,7 @@ const pendingOverwriteTTL = 10 * time.Minute
 // resubmit-to-confirm overwrite rule, auto-tracks unknown names, applies the
 // changes and replies with a text-only receipt. targetMessageID scopes the
 // pending overwrite confirmation to the exact message being resubmitted.
-func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, targetMessageID string, submitted map[string]int, week time.Time, parseWarnings string) {
+func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, targetMessageID, resubmitHint string, submitted map[string]int, week time.Time, parseWarnings string) {
 	if len(submitted) == 0 {
 		r.Edit("Nothing was parsed from that input - no changes were made.")
 		return
@@ -96,7 +96,7 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		}
 		msg := fmt.Sprintf("%d existing score(s) for %s differ from the submitted values - no changes were made.",
 			len(plan.Conflicts), weekLabel)
-		msg += "\nRight-click -> **Submit Scores** on the same message again within 10 minutes to overwrite these scores."
+		msg += "\n" + resubmitHint
 		r.EditWithTable(msg, formatConflictsTable(plan.Conflicts))
 		return
 	}

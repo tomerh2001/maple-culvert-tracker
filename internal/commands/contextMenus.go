@@ -74,7 +74,9 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	finalizeSubmitScores(s, r, i, msg.ID, scores, week, parseWarnings)
+	finalizeSubmitScores(s, r, i, msg.ID,
+		"Right-click -> **Submit Scores** on the same message again within 10 minutes to overwrite these scores.",
+		scores, week, parseWarnings)
 }
 
 // scoresFromMessage fills scores from a message: a pre-parsed .txt/.json
@@ -114,7 +116,15 @@ func scoresFromMessage(s *discordgo.Session, r *reply, tenantID string, msg *dis
 		r.editScreenshotFailure("No image or scores attachments found on the selected message.")
 		return "", false
 	}
+	return scoresFromImageURLs(r, tenantID, imageURLs, scores)
+}
 
+// scoresFromImageURLs OCRs the given screenshot URLs against the tenant's
+// roster and fills scores. It is the shared core of the right-click Submit
+// Scores menu and the /submit-scores command: on failure it edits the
+// (deferred) interaction response and returns ok=false; on success warnings
+// carries any non-fatal parse defects for the caller's receipt.
+func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores map[string]int) (warnings string, ok bool) {
 	oc, err := ocrImagesToScores(tenantID, imageURLs)
 	if err != nil {
 		// Screenshot-fixable failures carry the requirements explainer and

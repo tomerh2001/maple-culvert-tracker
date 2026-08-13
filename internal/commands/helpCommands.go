@@ -26,7 +26,7 @@ That connects your MapleStory character to your Discord account.
 ` + "`/culvert-all`" + ` - the guild's scores for a week (add ` + "`date:`" + ` for past weeks)
 
 **4. How scores get in**
-Submitters post a screenshot of the in-game ranking and right click it -> Apps -> **Submit Scores** - that is the only submission path. Single-score corrections go through ` + "`/set-culvert`" + `. If your score is missing, poke a submitter.
+Submitters submit a screenshot of the in-game ranking two ways: right click the message -> Apps -> **Submit Scores**, or attach it to ` + "`/submit-scores`" + `. Single-score corrections go through ` + "`/set-culvert`" + `. If your score is missing, poke a submitter.
 
 The culvert week rolls over at **Thursday 00:00 UTC** (03:00 Israel summer time).
 Every server has its own private data - characters and scores never mix between servers.
@@ -51,9 +51,9 @@ The bot then keeps ONE summary message per week there (coverage, top scores, gui
 Members self-serve with ` + "`/register`" + ` (submitters can link anyone: ` + "`/register name:X user:@member`" + `). Submitting scores auto-tracks unknown names automatically, so a first screenshot submission builds the roster for you. ` + "`/unregister`" + ` handles leavers (history is kept).
 
 **4. Submit scores weekly**
-Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine), post it in Discord, then right click the message -> Apps -> **Submit Scores**. Done - that is the ONLY submission path, no command needed.
+Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine). Submit it either way: right click the posted message -> Apps -> **Submit Scores**, or attach it to ` + "`/submit-scores`" + ` (up to 5 screenshots for a long roster).
 - Scores land on the current culvert week; the week rolls over at **Thursday 00:00 UTC** (03:00 Israel summer time)
-- If some scores already exist with different values, nothing is written: the bot shows the conflicts and asks you to right click -> **Submit Scores** on the same message again within 10 minutes to confirm the overwrite
+- If some scores already exist with different values, nothing is written: the bot shows the conflicts and asks you to submit the same screenshots again within 10 minutes to confirm the overwrite
 - Single fixes (typos, missed rows, past weeks): ` + "`/set-culvert name:X score:123 date:YYYY-MM-DD`" + `
 
 **5. Housekeeping**

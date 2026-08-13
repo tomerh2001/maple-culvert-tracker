@@ -6,16 +6,17 @@ import (
 
 var setCulvertScoreMin = float64(0)
 
-// Commands is the ENTIRE deliberately-small surface: 10 slash commands and 2
+// Commands is the ENTIRE deliberately-small surface: 11 slash commands and 2
 // context menus, registered GLOBALLY (any server may install the bot; each
-// server's data is tenant-isolated). Score submission has exactly one path
-// (right click a screenshot message -> Apps -> Submit Scores); /set-culvert
-// covers manual corrections. UpdateCommands bulk-overwrites the global set,
-// deleting anything else that is still registered remotely.
+// server's data is tenant-isolated). Scores are submitted from screenshots
+// either by right clicking a message (Apps -> Submit Scores) or by attaching
+// them to /submit-scores; /set-culvert covers manual corrections.
+// UpdateCommands bulk-overwrites the global set, deleting anything else that
+// is still registered remotely.
 var Commands = []*discordgo.ApplicationCommand{
 	// ── Everyone ────────────────────────────────────────────────────────────
 	{
-		Name:        "help",
+		Name:        "culvert-help",
 		Description: "How to use this bot",
 	},
 	{
@@ -91,6 +92,42 @@ var Commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	// ── Submitters / admins ─────────────────────────────────────────────────
+	{
+		Name:        "submit-scores",
+		Description: "Submit weekly culvert scores from screenshot(s) attached to this command",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Required:    true,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot",
+				Description: "A screenshot of the Guild - Member Participation Status window",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-2",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-3",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-4",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-5",
+				Description: "Another page of the roster (optional)",
+			},
+		},
+	},
 	{
 		Name:        "set-culvert",
 		Description: "Manually set one character's culvert score for a week",
