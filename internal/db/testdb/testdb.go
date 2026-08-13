@@ -7,6 +7,7 @@
 package testdb
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -24,11 +25,19 @@ import (
 // character_culvert_scores -> characters FK.
 const truncateSQL = `TRUNCATE characters, character_culvert_scores, weekly_announcements RESTART IDENTITY CASCADE`
 
+// advisoryLockKey serializes DB tests ACROSS test binaries: `go test ./...`
+// runs packages in parallel, and every package's DB tests share the one
+// TEST_DATABASE_URL database - without this lock, one package's TRUNCATE
+// races another package's inserts (FK violations, vanishing rows).
+const advisoryLockKey = 0x1c31_7e57 // "tc*_test"
+
 // TestDB returns a connection to the database named by TEST_DATABASE_URL,
 // skipping the test when it is unset. The schema is (re-)applied from
 // db_migrations/*.up.sql - they are idempotent plain SQL, executed directly -
 // and the data tables are truncated both now and again at test cleanup, so
-// every test starts from an empty, fully migrated database.
+// every test starts from an empty, fully migrated database. A session
+// advisory lock is held for the duration of the test, serializing DB tests
+// across concurrently running test binaries.
 func TestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -42,6 +51,18 @@ func TestDB(t *testing.T) *sql.DB {
 	if err := dbc.Ping(); err != nil {
 		t.Fatalf("pinging TEST_DATABASE_URL: %v", err)
 	}
+
+	// The advisory lock is session-scoped: pin one connection for the whole
+	// test so the lock lives exactly as long as the test does.
+	ctx := context.Background()
+	lockConn, err := dbc.Conn(ctx)
+	if err != nil {
+		t.Fatalf("opening lock connection: %v", err)
+	}
+	if _, err := lockConn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", advisoryLockKey); err != nil {
+		t.Fatalf("acquiring test advisory lock: %v", err)
+	}
+
 	for _, path := range migrationFiles(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -58,6 +79,10 @@ func TestDB(t *testing.T) *sql.DB {
 		if _, err := dbc.Exec(truncateSQL); err != nil {
 			t.Errorf("cleanup: truncating test tables: %v", err)
 		}
+		if _, err := lockConn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey); err != nil {
+			t.Errorf("cleanup: releasing test advisory lock: %v", err)
+		}
+		lockConn.Close()
 		dbc.Close()
 	})
 	return dbc
