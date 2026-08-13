@@ -14,10 +14,14 @@ func tenantOf(i *discordgo.InteractionCreate) string {
 	return data.TenantID(i.GuildID)
 }
 
-// isAdmin reports whether the caller has Administrator or Manage Server.
+// isAdmin reports whether the caller has Administrator or Manage Server. The
+// deployment operator (data.IsBotOwner) passes unconditionally.
 func isAdmin(i *discordgo.InteractionCreate) bool {
 	if i.Member == nil {
 		return false
+	}
+	if data.IsBotOwner(i.Member.User.ID) {
+		return true
 	}
 	return i.Member.Permissions&(discordgo.PermissionAdministrator|discordgo.PermissionManageServer) != 0
 }
