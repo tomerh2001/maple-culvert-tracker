@@ -99,19 +99,35 @@ func checkGuildAccess(s *discordgo.Session, tenantID string) CheckResult {
 		c.Fix = "Set DISCORD_GUILD_ID (and optionally DISCORD_EXTRA_GUILD_IDS)"
 		return c
 	}
-	missing := []string{}
+	primary := data.PrimaryGuildID()
+	missingPrimary := []string{}
+	missingExtra := []string{}
 	for _, gid := range guildIDs {
 		if g, err := s.State.Guild(gid); err == nil && g != nil {
 			continue
 		}
 		if _, err := s.Guild(gid); err != nil {
-			missing = append(missing, gid)
+			if gid == primary {
+				missingPrimary = append(missingPrimary, gid)
+			} else {
+				missingExtra = append(missingExtra, gid)
+			}
 		}
 	}
-	if len(missing) > 0 {
+	// The home guild is mandatory: not being in it is a real failure.
+	if len(missingPrimary) > 0 {
 		c.Status = CheckFail
-		c.Detail = "not a member of guild(s): " + strings.Join(missing, ", ")
+		c.Detail = "not a member of guild(s): " + strings.Join(missingPrimary, ", ")
 		c.Fix = "Invite the bot to those servers, or remove the ids from DISCORD_GUILD_ID/DISCORD_EXTRA_GUILD_IDS"
+		return c
+	}
+	// Extra (shared) guilds may legitimately be pending an invite - a
+	// deployment can list a server it intends to share data with before the
+	// bot is added there. That is a pass with a note, never a boot-report
+	// failure: it must not spam the admin channel until the invite happens.
+	if len(missingExtra) > 0 {
+		c.Status = CheckPass
+		c.Detail = fmt.Sprintf("member of the home guild; shared guild(s) pending an invite: %s", strings.Join(missingExtra, ", "))
 		return c
 	}
 	c.Status, c.Detail = CheckPass, fmt.Sprintf("member of all %d served guild(s)", len(guildIDs))
