@@ -1,15 +1,11 @@
 package commands
 
-//lint:file-ignore ST1001 Dot imports by jet
 import (
-	"fmt"
 	"log"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	. "github.com/go-jet/jet/v2/postgres"
-	"github.com/jedib0t/go-pretty/v6/table"
-	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
+	apihelpers "github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
@@ -23,8 +19,9 @@ func emptyWeekMessage(weekLabel string) string {
 // noTrackedCharactersMessage is the shared empty-roster state.
 const noTrackedCharactersMessage = "No characters are tracked yet. Members can `/register`, or a submitter can just right click a screenshot message -> Apps -> **Submit Scores**."
 
-// culvertBoard renders the guild's score-descending table for one culvert
-// week (default: the current one). Public reply, text only.
+// culvertBoard renders the guild's ranked board for one culvert week
+// (default: the current one) as the shared week embed - the same look as the
+// weekly thread table. Public reply.
 func culvertBoard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, false)
 	tenant := tenantOf(i)
@@ -48,50 +45,22 @@ func culvertBoard(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	weekLabel := cmdhelpers.FormatWeekLabel(week, time.Now())
 
-	// Population aligned with the tracked roster (GetActiveCharacters).
-	chars, _, err := cmdhelpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB, tenant)
+	embed, rowCount, err := apihelpers.WeekTableEmbed(db.DB, apiredis.RedisDB, tenant, "Culvert - "+weekLabel, week)
 	if err != nil {
-		log.Println("culvert-all: get active characters:", err)
-		r.Edit("Failed to retrieve characters' data from database. See server logs.")
-		return
-	}
-	if len(*chars) == 0 {
-		r.Edit(noTrackedCharactersMessage)
-		return
-	}
-	charIDs := make([]Expression, 0, len(*chars))
-	for _, c := range *chars {
-		charIDs = append(charIDs, Int64(c.ID))
-	}
-
-	// Fixed ordering: score descending, names break ties.
-	stmt := SELECT(Characters.MapleCharacterName.AS("maple_character_name"), CharacterCulvertScores.Score.AS("score")).
-		FROM(CharacterCulvertScores.INNER_JOIN(Characters, Characters.ID.EQ(CharacterCulvertScores.CharacterID))).
-		WHERE(CharacterCulvertScores.CulvertDate.EQ(DateT(week)).AND(CharacterCulvertScores.CharacterID.IN(charIDs...))).
-		ORDER_BY(CharacterCulvertScores.Score.DESC(), Characters.MapleCharacterName.ASC())
-
-	dest := []struct {
-		Score              int32
-		MapleCharacterName string
-	}{}
-	if err := stmt.Query(db.DB, &dest); err != nil {
 		log.Println("culvert-all:", err)
 		r.Edit("Failed to retrieve characters' data from database. See server logs.")
 		return
 	}
-
-	if len(dest) == 0 {
+	if rowCount == 0 {
+		chars, cerr := cmdhelpers.GetActiveCharacters(apiredis.RedisDB, db.DB, tenant)
+		if cerr == nil && len(*chars) == 0 {
+			r.Edit(noTrackedCharactersMessage)
+			return
+		}
 		r.Edit(emptyWeekMessage(weekLabel))
 		return
 	}
-
-	t := table.NewWriter()
-	t.AppendHeader(table.Row{"Pos", "Character", "Score"})
-	for idx, row := range dest {
-		t.AppendRow(table.Row{idx + 1, row.MapleCharacterName, row.Score})
-	}
-
-	content := "Culvert board for " + weekLabel + "\n" +
-		fmt.Sprintf("%d of %d tracked characters have a score this week.", len(dest), len(*chars))
-	r.EditWithTable(content, t.Render())
+	r.EditData(&discordgo.InteractionResponseData{
+		Embeds: []*discordgo.MessageEmbed{embed},
+	})
 }

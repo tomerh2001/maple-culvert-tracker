@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
@@ -85,8 +84,8 @@ func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, te
 	}
 
 	summary := buildWeeklySummary(weekStr, rosterCount, rows)
-	tableContent, tableFile := buildWeeklyTable(weekStr, rows, prevByID)
-	threadID, err := upsertWeeklyArtifacts(s, dbc, tenantID, channelID, weekStr, summary, tableContent, tableFile, false)
+	tableEmbed := BuildWeekTableEmbed("Full table - week of "+weekStr, rosterCount, rows, prevByID)
+	threadID, err := upsertWeeklyArtifacts(s, dbc, tenantID, channelID, weekStr, summary, tableEmbed, false)
 	if err != nil {
 		return err
 	}
@@ -144,8 +143,8 @@ func RefreshWeeklyAnnouncement(s *discordgo.Session, dbc *sql.DB, rdb *redis.Cli
 	}
 
 	summary := buildWeeklySummary(weekStr, rosterCount, rows)
-	tableContent, tableFile := buildWeeklyTable(weekStr, rows, prevByID)
-	_, err = upsertWeeklyArtifacts(s, dbc, tenantID, "", weekStr, summary, tableContent, tableFile, true)
+	tableEmbed := BuildWeekTableEmbed("Full table - week of "+weekStr, rosterCount, rows, prevByID)
+	_, err = upsertWeeklyArtifacts(s, dbc, tenantID, "", weekStr, summary, tableEmbed, true)
 	return err
 }
 
@@ -227,34 +226,86 @@ func buildWeeklySummary(weekStr string, rosterCount int, rows []weekScore) strin
 	return b.String()
 }
 
-// buildWeeklyTable renders the full week table for the thread message. When
-// it fits, the table is inline in a code block; otherwise it is attached as a
-// file.
-func buildWeeklyTable(weekStr string, rows []weekScore, prevByID map[int64]weekScore) (string, *discordgo.File) {
-	if len(rows) == 0 {
-		return "**Full table - week of " + weekStr + "**\nNo scores recorded yet this week.", nil
-	}
-	t := table.NewWriter()
-	t.AppendHeader(table.Row{"Rank", "Character", "Score", "Last Week"})
-	for _, r := range rows {
-		last := "-"
-		if p, ok := prevByID[r.CharacterID]; ok {
-			last = fmt.Sprintf("%s (#%d)", FormatThousands(p.Score), p.Rank)
-		}
-		t.AppendRow(table.Row{r.Rank, r.Name, FormatThousands(r.Score), last})
-	}
-	rendered := t.Render()
+// weekEmbedColor matches the /culvert chart embed so every culvert visual
+// looks like one family.
+const weekEmbedColor = 3580651
 
-	header := "**Full table - week of " + weekStr + "**"
-	inline := header + "\n```\n" + rendered + "\n```"
-	if len(inline) <= 1900 {
-		return inline, nil
+// BuildWeekTableEmbed renders the week's ranked board as a Discord-native
+// embed (no ASCII tables): medals for the top three, bold names, thousands
+// separators, and rank movement vs the previous week. Shared by the weekly
+// thread table and /culvert-all.
+func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevByID map[int64]weekScore) *discordgo.MessageEmbed {
+	e := &discordgo.MessageEmbed{
+		Title:     title,
+		Color:     weekEmbedColor,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
-	return header, &discordgo.File{
-		Name:        "culvert-" + weekStr + ".txt",
-		ContentType: "text/plain",
-		Reader:      strings.NewReader(rendered),
+	if len(rows) == 0 {
+		e.Description = "No scores recorded yet this week."
+		return e
 	}
+	e.Footer = &discordgo.MessageEmbedFooter{
+		Text: fmt.Sprintf("%d of %d members submitted", len(rows), rosterCount),
+	}
+
+	medals := []string{":first_place:", ":second_place:", ":third_place:"}
+	lines := make([]string, 0, len(rows))
+	for idx, r := range rows {
+		prefix := fmt.Sprintf("`#%2d`", r.Rank)
+		name := r.Name
+		if idx < len(medals) {
+			prefix = medals[idx]
+			name = "**" + name + "**"
+		}
+		line := prefix + " " + name + " - " + FormatThousands(r.Score)
+		if p, ok := prevByID[r.CharacterID]; ok {
+			switch {
+			case p.Rank > r.Rank:
+				line += fmt.Sprintf(" (:arrow_up: %d)", p.Rank-r.Rank)
+			case p.Rank < r.Rank:
+				line += fmt.Sprintf(" (:arrow_down: %d)", r.Rank-p.Rank)
+			}
+		} else if len(prevByID) > 0 {
+			line += " (new)"
+		}
+		lines = append(lines, line)
+	}
+
+	// Discord caps embed descriptions at 4096 characters: keep whole lines
+	// and say how many were cut rather than overflowing.
+	desc := ""
+	for idx, line := range lines {
+		add := line + "\n"
+		if len(desc)+len(add)+40 > 4096 {
+			desc += fmt.Sprintf("... and %d more", len(lines)-idx)
+			break
+		}
+		desc += add
+	}
+	e.Description = strings.TrimRight(desc, "\n")
+	return e
+}
+
+// WeekTableEmbed loads the tenant's board for the week and renders it as the
+// shared embed. rowCount lets callers show their own empty state.
+func WeekTableEmbed(dbc *sql.DB, rdb *redis.Client, tenantID, title string, week time.Time) (embed *discordgo.MessageEmbed, rowCount int, err error) {
+	rows, err := weekScores(dbc, tenantID, week)
+	if err != nil {
+		return nil, 0, err
+	}
+	prevRows, perr := weekScores(dbc, tenantID, cmdhelpers.GetCulvertPreviousDate(week))
+	if perr != nil {
+		prevRows = nil
+	}
+	prevByID := map[int64]weekScore{}
+	for _, p := range prevRows {
+		prevByID[p.CharacterID] = p
+	}
+	rosterCount := len(rows)
+	if chars, cerr := cmdhelpers.GetActiveCharacters(rdb, dbc, tenantID); cerr == nil && len(*chars) >= len(rows) {
+		rosterCount = len(*chars)
+	}
+	return BuildWeekTableEmbed(title, rosterCount, rows, prevByID), len(rows), nil
 }
 
 // upsertWeeklyArtifacts creates or edits the tenant's weekly artifacts: the
@@ -266,7 +317,7 @@ func buildWeeklyTable(weekStr string, rows []weekScore, prevByID map[int64]weekS
 //
 // requireExisting makes a missing announcement record a silent no-op (used by
 // refreshes: registering a character must never CREATE a weekly post).
-func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelID, weekStr, summary, tableContent string, tableFile *discordgo.File, requireExisting bool) (string, error) {
+func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelID, weekStr, summary string, tableEmbed *discordgo.MessageEmbed, requireExisting bool) (string, error) {
 	var storedChannel, storedMessage, storedThread, storedTableMsg string
 	err := dbc.QueryRow(
 		`SELECT channel_id, message_id, thread_id, table_message_id FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`,
@@ -306,7 +357,7 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelI
 				}
 			}
 			if storedThread != "" {
-				upsertThreadTable(s, dbc, tenantID, weekStr, storedThread, storedTableMsg, tableContent, tableFile)
+				upsertThreadTable(s, dbc, tenantID, weekStr, storedThread, storedTableMsg, tableEmbed)
 			}
 			return storedThread, nil
 		}
@@ -343,36 +394,32 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelI
 	}
 	if threadID != "" {
 		// The table is the thread's FIRST comment on a fresh week.
-		upsertThreadTable(s, dbc, tenantID, weekStr, threadID, "", tableContent, tableFile)
+		upsertThreadTable(s, dbc, tenantID, weekStr, threadID, "", tableEmbed)
 	}
 	return threadID, nil
 }
 
-// upsertThreadTable edits the week's full-table message inside the thread, or
-// posts it (recording its id) when it doesn't exist yet or its stored id is
-// unreachable. Failures are logged, never fatal: the table is derived data
-// and the next refresh retries.
-func upsertThreadTable(s *discordgo.Session, dbc *sql.DB, tenantID, weekStr, threadID, tableMsgID, content string, file *discordgo.File) {
+// upsertThreadTable edits the week's full-table embed message inside the
+// thread, or posts it (recording its id) when it doesn't exist yet or its
+// stored id is unreachable. Failures are logged, never fatal: the table is
+// derived data and the next refresh retries.
+func upsertThreadTable(s *discordgo.Session, dbc *sql.DB, tenantID, weekStr, threadID, tableMsgID string, tableEmbed *discordgo.MessageEmbed) {
+	embeds := []*discordgo.MessageEmbed{tableEmbed}
 	if tableMsgID != "" {
+		empty := ""
 		edit := &discordgo.MessageEdit{
 			Channel: threadID,
 			ID:      tableMsgID,
-			Content: &content,
+			Content: &empty, // clears pre-embed ASCII content on transition
+			Embeds:  &embeds,
 		}
 		edit.Attachments = &[]*discordgo.MessageAttachment{}
-		if file != nil {
-			edit.Files = []*discordgo.File{file}
-		}
 		if _, err := s.ChannelMessageEditComplex(edit); err == nil {
 			return
 		}
 		log.Println("weekly artifacts: table message unreachable, reposting")
 	}
-	send := &discordgo.MessageSend{Content: content}
-	if file != nil {
-		send.Files = []*discordgo.File{file}
-	}
-	msg, err := s.ChannelMessageSendComplex(threadID, send)
+	msg, err := s.ChannelMessageSendComplex(threadID, &discordgo.MessageSend{Embeds: embeds})
 	if err != nil {
 		log.Println("weekly artifacts: post thread table:", err)
 		return
