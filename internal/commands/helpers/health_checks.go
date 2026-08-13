@@ -252,40 +252,71 @@ var weeklyRequiredPermissions = []struct {
 // and this week's announcement thread. Returns 1-2 results depending on what
 // is applicable.
 func checkWeeklyChannel(s *discordgo.Session, tenantID string) []CheckResult {
-	c := CheckResult{Name: "Weekly channel"}
-	channelID := strings.TrimSpace(apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.For(tenantID).GetWithDefault(apiredis.RedisDB, ""))
-	if channelID == "" {
-		c.Status, c.Detail = CheckWarn, "not set - weekly announcements are disabled"
-		c.Fix = "`/config setting:Discord Weekly Announcement Channel ID channel:#your-channel`"
-		return []CheckResult{c}
+	primary := data.PrimaryGuildID()
+	inGuild := func(gid string) bool {
+		if g, err := s.State.Guild(gid); err == nil && g != nil {
+			return true
+		}
+		_, err := s.Guild(gid)
+		return err == nil
 	}
 	botID := ""
 	if s.State != nil && s.State.User != nil {
 		botID = s.State.User.ID
 	}
-	perms, err := s.UserChannelPermissions(botID, channelID)
-	if err != nil {
-		c.Status, c.Detail = CheckFail, "cannot resolve my permissions in <#"+channelID+">: "+err.Error()
-		c.Fix = "Make sure the channel still exists and I can see it, or re-set it with `/config`"
-		return []CheckResult{c}
-	}
-	missing := []string{}
-	for _, p := range weeklyRequiredPermissions {
-		if perms&p.Bit == 0 {
-			missing = append(missing, p.Name)
+
+	// The weekly channel is per-guild: each server in a shared tenant announces
+	// into its own channel, so check every configured one.
+	out := []CheckResult{}
+	configuredAnywhere := false
+	for _, gid := range data.TenantGuildIDs(tenantID) {
+		if gid == "" {
+			continue
+		}
+		channelID := strings.TrimSpace(apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.For(gid).GetWithDefault(apiredis.RedisDB, ""))
+		if channelID == "" {
+			continue // this server simply doesn't announce - not an error
+		}
+		configuredAnywhere = true
+		c := CheckResult{Name: "Weekly channel"}
+		// A shared guild we have not joined yet: its channel is unreachable but
+		// that is expected until the invite - a pass, never a boot-report fail.
+		if gid != primary && !inGuild(gid) {
+			c.Status, c.Detail = CheckPass, "shared server "+gid+" pending an invite; its weekly channel <#"+channelID+"> will be verified once I join"
+			out = append(out, c)
+			continue
+		}
+		perms, err := s.UserChannelPermissions(botID, channelID)
+		if err != nil {
+			c.Status, c.Detail = CheckFail, "cannot resolve my permissions in <#"+channelID+">: "+err.Error()
+			c.Fix = "Make sure the channel still exists and I can see it, or re-set it with `/config`"
+			out = append(out, c)
+			continue
+		}
+		missing := []string{}
+		for _, p := range weeklyRequiredPermissions {
+			if perms&p.Bit == 0 {
+				missing = append(missing, p.Name)
+			}
+		}
+		if len(missing) > 0 {
+			c.Status = CheckFail
+			c.Detail = "missing permission(s) in <#" + channelID + ">: " + strings.Join(missing, ", ")
+			c.Fix = "Grant the bot those permissions in the channel settings"
+			out = append(out, c)
+			continue
+		}
+		c.Status, c.Detail = CheckPass, "all required permissions in <#"+channelID+">"
+		out = append(out, c)
+		if tc, ok := checkWeeklyThread(gid); ok {
+			out = append(out, tc)
 		}
 	}
-	if len(missing) > 0 {
-		c.Status = CheckFail
-		c.Detail = "missing permission(s) in <#" + channelID + ">: " + strings.Join(missing, ", ")
-		c.Fix = "Grant the bot those permissions in the channel settings"
-		return []CheckResult{c}
-	}
-	c.Status, c.Detail = CheckPass, "all required permissions in <#"+channelID+">"
-
-	out := []CheckResult{c}
-	if tc, ok := checkWeeklyThread(tenantID); ok {
-		out = append(out, tc)
+	if !configuredAnywhere {
+		c := CheckResult{Name: "Weekly channel"}
+		c.Status, c.Detail = CheckWarn, "not set - weekly announcements are disabled"
+		c.Fix = "`/config setting:Discord Weekly Announcement Channel ID value:#your-channel`"
+		out = append(out, c)
 	}
 	return out
 }
@@ -294,7 +325,7 @@ func checkWeeklyChannel(s *discordgo.Session, tenantID string) []CheckResult {
 // but its notes thread was never created. Returns ok=false when there is
 // nothing to report (no announcement yet, or DB unavailable - the postgres
 // check covers that).
-func checkWeeklyThread(tenantID string) (CheckResult, bool) {
+func checkWeeklyThread(guildID string) (CheckResult, bool) {
 	c := CheckResult{Name: "Weekly thread"}
 	if db.DB == nil {
 		return c, false
@@ -302,7 +333,7 @@ func checkWeeklyThread(tenantID string) (CheckResult, bool) {
 	week := CurrentCulvertWeek(time.Now()).Format(time.DateOnly)
 	var threadID string
 	err := db.DB.QueryRow(
-		`SELECT thread_id FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`, tenantID, week).Scan(&threadID)
+		`SELECT thread_id FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`, guildID, week).Scan(&threadID)
 	switch {
 	case err == sql.ErrNoRows:
 		return c, false // no announcement this week yet - nothing to check

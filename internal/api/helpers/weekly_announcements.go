@@ -20,20 +20,22 @@ import (
 // non-failure.
 var ErrNoWeeklyChannel = errors.New("no weekly channel configured")
 
-// AnnounceSubmission is the only place the bot posts without being asked, and
-// it only posts to the TENANT's configured weekly channel
-// (CONF_DISCORD_WEEKLY_CHANNEL_ID):
+// AnnounceSubmission is the only place the bot posts without being asked. It
+// renders the week once from the tenant's shared data and posts it into EACH
+// guild in the tenant that has a weekly channel configured
+// (CONF_DISCORD_WEEKLY_CHANNEL_ID, per-guild) - so two servers sharing one
+// dataset each get the announcement in their own channel. Per guild:
 //   - one SUMMARY message per culvert week (coverage, top scores, guild
 //     total), created on the first submission for that week and edited in
 //     place afterwards
-//   - a thread under it whose first bot comment is the FULL score table
-//     (edited in place on every refresh), followed by submission notes and
-//     personal best congratulations (mentioning the linked Discord member)
+//   - a thread under it whose first bot comment is the FULL score table, and a
+//     single submission note (personal-best congratulations, mentioning the
+//     linked Discord member) - both edited in place on every refresh
 //
 // Submissions for historical weeks update that week's message/thread.
-// changedIDs are the character ids touched by this submission; only their new
-// personal bests are congratulated. Everything - scores, roster,
-// announcement records - is scoped to tenantID.
+// changedIDs is retained for API compatibility (the note reflects the week's
+// full PB state). Scores and roster are scoped to tenantID; announcement
+// records are keyed per real guild.
 //
 // The returned error tells the caller whether the announcement went out:
 // nil = message (and thread note) updated, ErrNoWeeklyChannel = skipped by
@@ -48,59 +50,115 @@ func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, te
 	if s == nil {
 		return errors.New("no discord session")
 	}
-	channelID := apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.For(tenantID).GetWithDefault(rdb, "")
-	if channelID == "" {
-		return ErrNoWeeklyChannel
-	}
-
 	week = cmdhelpers.GetCulvertResetDate(week)
-	weekStr := week.Format(time.DateOnly)
-	prevWeek := cmdhelpers.GetCulvertPreviousDate(week)
-
-	rows, err := weekScores(dbc, tenantID, week)
+	art, err := buildWeeklyArtifacts(dbc, rdb, tenantID, week)
 	if err != nil {
-		log.Println("AnnounceSubmission: query week scores:", err)
-		return errors.New("querying the week's scores failed (see server logs)")
+		return err
 	}
-	if len(rows) == 0 {
+	if len(art.rows) == 0 {
 		return errors.New("no scores recorded for that week")
 	}
-	prevRows, err := weekScores(dbc, tenantID, prevWeek)
+	// Fan out to EVERY guild in the tenant that has a weekly channel: servers
+	// sharing one dataset each get the same announcement in their own channel.
+	// changedIDs is retained for API compatibility; the note now reflects the
+	// week's full personal-best state rather than one submission's delta.
+	_ = changedIDs
+	return fanOutWeekly(s, dbc, rdb, tenantID, art, false)
+}
+
+// weeklyArtifacts is the shared render of one week's data, computed once from
+// the tenant's dataset and posted into each of the tenant's guild channels.
+type weeklyArtifacts struct {
+	weekStr    string
+	rows       []weekScore
+	summary    string
+	tableEmbed *discordgo.MessageEmbed
+	note       string
+}
+
+// buildWeeklyArtifacts renders a week's summary, full-table embed and thread
+// note once from the tenant's shared data (rows may be empty).
+func buildWeeklyArtifacts(dbc *sql.DB, rdb *redis.Client, tenantID string, week time.Time) (weeklyArtifacts, error) {
+	weekStr := week.Format(time.DateOnly)
+	rows, err := weekScores(dbc, tenantID, week)
 	if err != nil {
-		// The previous-week comparison is decorative: log and degrade.
-		log.Println("AnnounceSubmission: query prev week scores:", err)
-		prevRows = nil
+		log.Println("weekly artifacts: query week scores:", err)
+		return weeklyArtifacts{}, errors.New("querying the week's scores failed (see server logs)")
+	}
+	prevRows, perr := weekScores(dbc, tenantID, cmdhelpers.GetCulvertPreviousDate(week))
+	if perr != nil {
+		prevRows = nil // the previous-week comparison is decorative
 	}
 	prevByID := map[int64]weekScore{}
 	for _, p := range prevRows {
 		prevByID[p.CharacterID] = p
 	}
-
-	// Roster size for the "N of M members submitted" header; degrade to the
-	// submitted count when the roster is unavailable.
 	rosterCount := len(rows)
 	if chars, cerr := cmdhelpers.GetActiveCharacters(rdb, dbc, tenantID); cerr == nil && len(*chars) >= len(rows) {
 		rosterCount = len(*chars)
 	}
+	return weeklyArtifacts{
+		weekStr:    weekStr,
+		rows:       rows,
+		summary:    buildWeeklySummary(weekStr, rosterCount, rows),
+		tableEmbed: BuildWeekTableEmbed("Full table - week of "+weekStr, rosterCount, rows, prevByID),
+		note:       buildWeekNote(dbc, week, weekStr, rows),
+	}, nil
+}
 
-	summary := buildWeeklySummary(weekStr, rosterCount, rows)
-	tableEmbed := BuildWeekTableEmbed("Full table - week of "+weekStr, rosterCount, rows, prevByID)
-	threadID, err := upsertWeeklyArtifacts(s, dbc, tenantID, channelID, weekStr, summary, tableEmbed, false)
-	if err != nil {
-		return err
+// fanOutWeekly upserts the artifacts into every guild in the tenant that has a
+// weekly channel configured (or already holds a message for the week). Each
+// server posts the same shared data into its OWN channel. requireExisting only
+// edits guilds that already have a message - a non-submission refresh must
+// never CREATE a new post anywhere. Returns ErrNoWeeklyChannel only when no
+// guild in the tenant announces at all.
+func fanOutWeekly(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID string, art weeklyArtifacts, requireExisting bool) error {
+	inGuild := func(gid string) bool {
+		if g, err := s.State.Guild(gid); err == nil && g != nil {
+			return true
+		}
+		_, err := s.Guild(gid)
+		return err == nil
 	}
-	if threadID == "" {
-		return errors.New("the weekly summary was updated but its thread is unavailable")
-	}
-
-	note := buildSubmissionNote(dbc, week, weekStr, rows, changedIDs)
-	for _, chunk := range chunkMessage(note, 1900) {
-		if _, err := s.ChannelMessageSend(threadID, chunk); err != nil {
-			log.Println("AnnounceSubmission: thread note failed:", err)
-			return errors.New("the weekly table was updated but posting the thread note failed")
+	anyConfigured := false
+	var firstErr error
+	for _, gid := range data.TenantGuildIDs(tenantID) {
+		if gid == "" {
+			continue
+		}
+		channelID := apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.For(gid).GetWithDefault(rdb, "")
+		if channelID == "" && !weeklyRowExists(dbc, gid, art.weekStr) {
+			continue
+		}
+		// A shared guild the bot has not joined yet: its channel is configured
+		// but unreachable - skip quietly (it announces once the bot is invited)
+		// rather than surface a per-submission failure.
+		if !inGuild(gid) {
+			continue
+		}
+		anyConfigured = true
+		if _, err := upsertWeeklyArtifacts(s, dbc, gid, channelID, art, requireExisting); err != nil {
+			log.Println("fanOutWeekly: guild", gid, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	if !anyConfigured {
+		return ErrNoWeeklyChannel
+	}
+	return firstErr
+}
+
+// weeklyRowExists reports whether a guild already has an announcement record
+// for the week (so a refresh can update it even if its channel config was
+// later cleared).
+func weeklyRowExists(dbc *sql.DB, guildID, weekStr string) bool {
+	var one int
+	err := dbc.QueryRow(
+		`SELECT 1 FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`,
+		guildID, weekStr).Scan(&one)
+	return err == nil
 }
 
 // RefreshWeeklyAnnouncement re-renders the EXISTING weekly artifacts (summary
@@ -122,30 +180,11 @@ func RefreshWeeklyAnnouncement(s *discordgo.Session, dbc *sql.DB, rdb *redis.Cli
 		return errors.New("no discord session")
 	}
 	week = cmdhelpers.GetCulvertResetDate(week)
-	weekStr := week.Format(time.DateOnly)
-
-	rows, err := weekScores(dbc, tenantID, week)
+	art, err := buildWeeklyArtifacts(dbc, rdb, tenantID, week)
 	if err != nil {
-		log.Println("RefreshWeeklyAnnouncement: query week scores:", err)
-		return errors.New("querying the week's scores failed (see server logs)")
+		return err
 	}
-	prevRows, err := weekScores(dbc, tenantID, cmdhelpers.GetCulvertPreviousDate(week))
-	if err != nil {
-		prevRows = nil
-	}
-	prevByID := map[int64]weekScore{}
-	for _, p := range prevRows {
-		prevByID[p.CharacterID] = p
-	}
-	rosterCount := len(rows)
-	if chars, cerr := cmdhelpers.GetActiveCharacters(rdb, dbc, tenantID); cerr == nil && len(*chars) >= len(rows) {
-		rosterCount = len(*chars)
-	}
-
-	summary := buildWeeklySummary(weekStr, rosterCount, rows)
-	tableEmbed := BuildWeekTableEmbed("Full table - week of "+weekStr, rosterCount, rows, prevByID)
-	_, err = upsertWeeklyArtifacts(s, dbc, tenantID, "", weekStr, summary, tableEmbed, true)
-	return err
+	return fanOutWeekly(s, dbc, rdb, tenantID, art, true)
 }
 
 type weekScore struct {
@@ -317,11 +356,17 @@ func WeekTableEmbed(dbc *sql.DB, rdb *redis.Client, tenantID, title string, week
 //
 // requireExisting makes a missing announcement record a silent no-op (used by
 // refreshes: registering a character must never CREATE a weekly post).
-func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelID, weekStr, summary string, tableEmbed *discordgo.MessageEmbed, requireExisting bool) (string, error) {
-	var storedChannel, storedMessage, storedThread, storedTableMsg string
+//
+// guildID keys the announcement record (the ACTUAL server, so each server in a
+// shared tenant keeps its own message); channelID is that server's configured
+// weekly channel (used only when creating a fresh post - edits reuse the
+// stored channel).
+func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID string, art weeklyArtifacts, requireExisting bool) (string, error) {
+	weekStr := art.weekStr
+	var storedChannel, storedMessage, storedThread, storedTableMsg, storedNoteMsg string
 	err := dbc.QueryRow(
-		`SELECT channel_id, message_id, thread_id, table_message_id FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`,
-		tenantID, weekStr).Scan(&storedChannel, &storedMessage, &storedThread, &storedTableMsg)
+		`SELECT channel_id, message_id, thread_id, table_message_id, note_message_id FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`,
+		guildID, weekStr).Scan(&storedChannel, &storedMessage, &storedThread, &storedTableMsg, &storedNoteMsg)
 	if err == sql.ErrNoRows && requireExisting {
 		return "", nil // nothing announced for that week - nothing to refresh
 	}
@@ -334,7 +379,7 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelI
 		summaryEdit := &discordgo.MessageEdit{
 			Channel: storedChannel,
 			ID:      storedMessage,
-			Content: &summary,
+			Content: &art.summary,
 		}
 		// Drop any table file attached by the pre-thread-table layout.
 		summaryEdit.Attachments = &[]*discordgo.MessageAttachment{}
@@ -351,28 +396,37 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelI
 					storedThread = thread.ID
 					if _, uerr := dbc.Exec(
 						`UPDATE weekly_announcements SET thread_id = $1 WHERE guild_id = $2 AND culvert_date = $3`,
-						storedThread, tenantID, weekStr); uerr != nil {
+						storedThread, guildID, weekStr); uerr != nil {
 						log.Println("weekly artifacts: store healed thread id:", uerr)
 					}
 				}
 			}
 			if storedThread != "" {
-				upsertThreadTable(s, dbc, tenantID, weekStr, storedThread, storedTableMsg, tableEmbed)
+				upsertThreadTable(s, dbc, guildID, weekStr, storedThread, storedTableMsg, art.tableEmbed)
+				upsertThreadNote(s, dbc, guildID, weekStr, storedThread, storedNoteMsg, art.note)
 			}
 			return storedThread, nil
 		}
-		// The stored message is gone (deleted channel/message); recreate it.
-		log.Println("weekly artifacts: stored weekly message unreachable, recreating")
-		if _, err := dbc.Exec(`DELETE FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`, tenantID, weekStr); err != nil {
+		// The stored message is gone (deleted channel/message); drop the stale
+		// record. A refresh (non-submission mutation) stops here - it must
+		// never CREATE a post; the next submission recreates it.
+		log.Println("weekly artifacts: stored weekly message unreachable, clearing record")
+		if _, err := dbc.Exec(`DELETE FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`, guildID, weekStr); err != nil {
 			log.Println("weekly artifacts: delete stale weekly_announcements:", err)
 			return "", errors.New("the stored weekly message is unreachable and its record could not be reset (see server logs)")
+		}
+		if requireExisting {
+			return "", nil
 		}
 		if channelID == "" {
 			channelID = storedChannel
 		}
 	}
 
-	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: summary})
+	if channelID == "" {
+		return "", ErrNoWeeklyChannel
+	}
+	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: art.summary})
 	if err != nil {
 		log.Println("weekly artifacts: send weekly message:", err)
 		return "", errors.New("posting the weekly message failed - check the bot's permissions in the weekly channel")
@@ -389,12 +443,13 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelI
 	}
 	if _, err := dbc.Exec(
 		`INSERT INTO weekly_announcements (guild_id, culvert_date, channel_id, message_id, thread_id) VALUES ($1, $2, $3, $4, $5)`,
-		tenantID, weekStr, channelID, msg.ID, threadID); err != nil {
+		guildID, weekStr, channelID, msg.ID, threadID); err != nil {
 		log.Println("weekly artifacts: insert weekly_announcements:", err)
 	}
 	if threadID != "" {
-		// The table is the thread's FIRST comment on a fresh week.
-		upsertThreadTable(s, dbc, tenantID, weekStr, threadID, "", tableEmbed)
+		// The table then the note are the thread's first bot comments.
+		upsertThreadTable(s, dbc, guildID, weekStr, threadID, "", art.tableEmbed)
+		upsertThreadNote(s, dbc, guildID, weekStr, threadID, "", art.note)
 	}
 	return threadID, nil
 }
@@ -403,7 +458,7 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, tenantID, channelI
 // thread, or posts it (recording its id) when it doesn't exist yet or its
 // stored id is unreachable. Failures are logged, never fatal: the table is
 // derived data and the next refresh retries.
-func upsertThreadTable(s *discordgo.Session, dbc *sql.DB, tenantID, weekStr, threadID, tableMsgID string, tableEmbed *discordgo.MessageEmbed) {
+func upsertThreadTable(s *discordgo.Session, dbc *sql.DB, guildID, weekStr, threadID, tableMsgID string, tableEmbed *discordgo.MessageEmbed) {
 	embeds := []*discordgo.MessageEmbed{tableEmbed}
 	if tableMsgID != "" {
 		empty := ""
@@ -426,56 +481,66 @@ func upsertThreadTable(s *discordgo.Session, dbc *sql.DB, tenantID, weekStr, thr
 	}
 	if _, err := dbc.Exec(
 		`UPDATE weekly_announcements SET table_message_id = $1 WHERE guild_id = $2 AND culvert_date = $3`,
-		msg.ID, tenantID, weekStr); err != nil {
+		msg.ID, guildID, weekStr); err != nil {
 		log.Println("weekly artifacts: store table message id:", err)
 	}
 }
 
-// buildSubmissionNote renders the thread note for one submission: timestamp,
-// scope (counting real scores separately from zero-fills), and personal-best
-// congratulations for the characters that changed. Tenant scoping is carried
-// by the character ids and rows the caller already resolved.
-func buildSubmissionNote(dbc *sql.DB, week time.Time, weekStr string, rows []weekScore, changedIDs []int64) string {
-	changedSet := map[int64]bool{}
-	for _, id := range changedIDs {
-		changedSet[id] = true
-	}
-	nonZero, zeroFilled := 0, 0
-	for _, row := range rows {
-		if !changedSet[row.CharacterID] {
-			continue
+// upsertThreadNote edits the week's single submission-note message in the
+// thread (personal-best celebrations), or posts it (recording its id) when it
+// does not exist yet or its stored id is unreachable. One note per week edited
+// in place - never one message per submission. Allowed-mentions default lets
+// the PB @mentions ping on the note's first creation. Failures are logged,
+// never fatal.
+func upsertThreadNote(s *discordgo.Session, dbc *sql.DB, guildID, weekStr, threadID, noteMsgID, note string) {
+	if noteMsgID != "" {
+		edit := &discordgo.MessageEdit{Channel: threadID, ID: noteMsgID, Content: &note}
+		if _, err := s.ChannelMessageEditComplex(edit); err == nil {
+			return
 		}
-		if row.Score > 0 {
-			nonZero++
-		} else {
-			zeroFilled++
-		}
+		log.Println("weekly artifacts: note message unreachable, reposting")
 	}
-	scope := fmt.Sprintf("%d characters", len(changedIDs))
-	if zeroFilled > 0 {
-		scope = fmt.Sprintf("%d characters: %d with scores, %d zero-filled", len(changedIDs), nonZero, zeroFilled)
+	msg, err := s.ChannelMessageSend(threadID, note)
+	if err != nil {
+		log.Println("weekly artifacts: post thread note:", err)
+		return
 	}
-	note := fmt.Sprintf("Scores submitted <t:%d:f> for **%s** (%s).", time.Now().Unix(),
-		cmdhelpers.FormatWeekLabel(week, time.Now()), scope)
+	if _, err := dbc.Exec(
+		`UPDATE weekly_announcements SET note_message_id = $1 WHERE guild_id = $2 AND culvert_date = $3`,
+		msg.ID, guildID, weekStr); err != nil {
+		log.Println("weekly artifacts: store note message id:", err)
+	}
+}
 
-	pbs := newPersonalBests(dbc, week, rows, changedIDs)
-	if len(pbs) > 0 {
-		note += "\n\nNew personal bests! :tada:"
-		for _, pb := range pbs {
-			note += "\n" + pb
+// buildWeekNote renders the single thread note for a week, edited in place on
+// every submission or refresh (never one message per submission). It is
+// deterministic in the week's data: it lists every character whose current
+// score is a personal best over prior weeks, so the same data always renders
+// the same note regardless of how many submissions produced it.
+func buildWeekNote(dbc *sql.DB, week time.Time, weekStr string, rows []weekScore) string {
+	if len(rows) == 0 {
+		return "No scores recorded yet this week."
+	}
+	pbs := weekPersonalBests(dbc, week, rows)
+	if len(pbs) == 0 {
+		return "No new personal bests recorded this week yet."
+	}
+	note := "**New personal bests this week** :tada:"
+	// Keep the note within Discord's 2000-char message limit.
+	for idx, pb := range pbs {
+		add := "\n" + pb
+		if len(note)+len(add)+40 > 1990 {
+			note += fmt.Sprintf("\n... and %d more", len(pbs)-idx)
+			break
 		}
+		note += add
 	}
 	return note
 }
 
-// newPersonalBests returns congratulation lines ("@member (Name): old -> new")
-// for changed characters whose submitted score beats their best before week.
-func newPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore, changedIDs []int64) []string {
-	changed := map[int64]bool{}
-	for _, id := range changedIDs {
-		changed[id] = true
-	}
-
+// weekPersonalBests returns congratulation lines ("@member (Name): old -> new")
+// for every character whose this-week score beats their best in prior weeks.
+func weekPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore) []string {
 	patchCutoff := ""
 	if week.After(data.Date2mPatch) {
 		patchCutoff = data.Date2mPatch.Format(time.DateOnly)
@@ -483,7 +548,7 @@ func newPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore, changedIDs 
 
 	out := []string{}
 	for _, r := range rows {
-		if !changed[r.CharacterID] || r.Score <= 0 {
+		if r.Score <= 0 {
 			continue
 		}
 		var best sql.NullInt64
@@ -507,27 +572,4 @@ func newPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore, changedIDs 
 		out = append(out, fmt.Sprintf("%s: %s -> %s", who, FormatThousands(int(best.Int64)), FormatThousands(r.Score)))
 	}
 	return out
-}
-
-// chunkMessage splits content on line boundaries into <= limit sized chunks.
-func chunkMessage(content string, limit int) []string {
-	if len(content) <= limit {
-		return []string{content}
-	}
-	chunks := []string{}
-	cur := ""
-	for _, line := range strings.Split(content, "\n") {
-		if len(cur)+len(line)+1 > limit && cur != "" {
-			chunks = append(chunks, cur)
-			cur = ""
-		}
-		if cur != "" {
-			cur += "\n"
-		}
-		cur += line
-	}
-	if cur != "" {
-		chunks = append(chunks, cur)
-	}
-	return chunks
 }

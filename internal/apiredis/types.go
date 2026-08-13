@@ -36,6 +36,20 @@ func (k redisInternalKey) ToString() string {
 	return k.Name
 }
 
+// perGuildKeyNames are settings scoped to the ACTUAL invoking guild rather
+// than shared across the whole tenant. Everything else (roles, submitters,
+// thresholds) is tenant-shared, but a channel only exists inside one server:
+// two servers sharing one dataset each announce into their OWN channel.
+var perGuildKeyNames = map[string]bool{
+	"CONF_DISCORD_WEEKLY_CHANNEL_ID": true,
+}
+
+// IsPerGuild reports whether this setting is scoped per invoking guild instead
+// of per tenant (see perGuildKeyNames).
+func (k redisInternalKey) IsPerGuild() bool {
+	return perGuildKeyNames[k.Name]
+}
+
 // ScopedKey is a redisInternalKey bound to one tenant's key space. Every read
 // or write goes through a ScopedKey, so no call site can touch redis without
 // first saying WHOSE data it means: k.For(tenantID) for tenant data,

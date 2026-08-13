@@ -50,6 +50,15 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	r := deferReply(s, i, true)
 	tenant := tenantOf(i)
+	// settingScope picks a key's key-space: per-guild settings (the weekly
+	// channel) are scoped to THIS server so each server in a shared tenant
+	// keeps its own; everything else is tenant-shared.
+	settingScope := func(perGuild bool) string {
+		if perGuild {
+			return i.GuildID
+		}
+		return tenant
+	}
 
 	settingName := ""
 	value := ""
@@ -69,7 +78,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		out := "**Bot settings** (set with `/config setting:<name> value:<value>` - `#channel`/`@role` mentions and comma separated id lists work as values)\n"
 		for _, name := range editableSettingKeys() {
 			k := apiredis.KeysMap[name]
-			cur := k.For(tenant).GetWithDefault(apiredis.RedisDB, "")
+			cur := k.For(settingScope(k.IsPerGuild())).GetWithDefault(apiredis.RedisDB, "")
 			display := "_(not set)_"
 			if cur != "" {
 				display = "`" + cur + "`"
@@ -108,7 +117,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	if !valueSet {
-		cur := k.For(tenant).GetWithDefault(apiredis.RedisDB, "")
+		cur := k.For(settingScope(k.IsPerGuild())).GetWithDefault(apiredis.RedisDB, "")
 		hint := ""
 		if desc != nil {
 			hint = "\n" + desc.Description
@@ -166,7 +175,7 @@ func configCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		value = strings.Join(cleaned, ",")
 	}
 
-	if err := k.For(tenant).Set(apiredis.RedisDB, value); err != nil {
+	if err := k.For(settingScope(k.IsPerGuild())).Set(apiredis.RedisDB, value); err != nil {
 		log.Println("config: set failed:", err)
 		r.Edit("Failed to save the setting. Please try again later.")
 		return
