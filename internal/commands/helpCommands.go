@@ -24,6 +24,7 @@ func culvertResetLine() string {
 // embed, see helpCommand). %%RESET%% is replaced with the next-reset timestamp.
 const helpText = `**1) Link your character(s)**
 Run ` + "`/register`" + `. The bot reads your Discord server nickname and automatically links all matching IGNs to your account.
+
 Other character commands:
 - ` + "`/unregister name:YourCharacter`" + ` — remove a character from your account (its score history is kept).
 - ` + "`/characters`" + ` — view all characters currently linked to your account.
