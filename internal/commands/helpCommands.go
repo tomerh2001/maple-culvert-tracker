@@ -6,40 +6,45 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	apihelpers "github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
-// culvertResetLine renders the NEXT weekly reset as Discord timestamps so
-// every reader sees it in their own timezone - no hard-coded clock time.
+// culvertResetLine renders the NEXT weekly reset as a Discord timestamp so every
+// reader sees it in their own timezone - no hard-coded clock time.
 func culvertResetLine() string {
 	// CurrentCulvertWeek returns the current week's Wednesday key (00:00 UTC);
 	// the week spans [key+1d, key+8d), so key+8d is the upcoming reset.
 	next := helpers.CurrentCulvertWeek(time.Now()).AddDate(0, 0, 8)
-	u := next.Unix()
-	return fmt.Sprintf("The culvert week resets weekly - next reset <t:%d:F> (<t:%d:R>).", u, u)
+	return fmt.Sprintf("<t:%d:F>", next.Unix())
 }
 
-const helpText = `## Culvert Tracker - how to use it
+// helpText is the /culvert-help embed description (rendered inside a colored
+// embed, see helpCommand). %%RESET%% is replaced with the next-reset timestamp.
+const helpText = `**1) Link your character(s)**
+Run ` + "`/register`" + `. The bot reads your Discord server nickname and automatically links all matching IGNs to your account.
+Other character commands:
+- ` + "`/unregister name:YourCharacter`" + ` — remove a character from your account (its score history is kept).
+- ` + "`/characters`" + ` — view all characters currently linked to your account.
 
-**1) Link your character(s) (once)**
-Just run ` + "`/register`" + ` - it reads your Discord server nickname and links all your IGNs to your account.
-- ` + "`/unregister name:YourCharacter`" + ` - remove one by name (history is kept)
-- ` + "`/characters`" + ` - list your registered characters.
+**2) Track your progress**
+Run ` + "`/culvert`" + ` to view your weekly Culvert scores and progress as a chart.
 
-**2) See your progress**
-- ` + "`/culvert`" + ` - your weekly culvert scores as a chart
+**3) How scores are added**
+Submitters upload a screenshot of the in-game Culvert rankings. To submit scores:
+- Right click the screenshot message → Apps → **Submit Scores**
+- Or run ` + "`/submit-scores`" + `
 
-**3) How scores get in**
-Submitters submit a screenshot of the in-game ranking - right click a message -> Apps -> **Submit Scores**, or use ` + "`/submit-scores`" + `.
+If one of your scores is missing, let an admin know.
 
-If your score is missing, let an admin know.
+**4) Weekly reset**
+The Culvert week resets every week.
+Next reset: %%RESET%%
 
-%%RESET%%
-Every server has its own private data - characters and scores never mix between servers.
+Each Discord server has its own private dataset — characters, scores, and history are never shared or mixed between servers.
 
-*Admins: type ` + "`/setup`" + ` for the setup guide.*
-
+*Admins: run ` + "`/setup`" + ` for the server setup guide.*
 *Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
 const setupText = `## Culvert Tracker - admin setup guide
@@ -69,7 +74,13 @@ Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status*
 *Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
 func helpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	deferReply(s, i, true).EditChunked(strings.ReplaceAll(helpText, "%%RESET%%", culvertResetLine()))
+	deferReply(s, i, true).EditData(&discordgo.InteractionResponseData{
+		Embeds: []*discordgo.MessageEmbed{{
+			Title:       "Culvert Tracker — How to Use It",
+			Color:       apihelpers.WeekEmbedColor,
+			Description: strings.ReplaceAll(helpText, "%%RESET%%", culvertResetLine()),
+		}},
+	})
 }
 
 func setupCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {

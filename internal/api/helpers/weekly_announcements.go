@@ -247,14 +247,15 @@ func FormatThousands(n int) string {
 // always-current overview. Title is just "Week of <date>"; the guild total sits
 // under it, then the top-three podium grid (medals + backticked name / score);
 // coverage + the help line live in the footer (tight under the grid, no blank
-// spacer), with no timestamp. The full table lives in the thread (see
-// BuildWeekTableEmbed).
+// spacer), with the embed timestamp showing when it was last updated. The full
+// table lives in the thread (see BuildWeekTableEmbed).
 func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []weekScore) *discordgo.MessageEmbed {
 	// Coverage + help live in the footer (which sits tight under the grid, no
-	// blank spacer line). No timestamp - the footer stays clean.
+	// blank spacer line); the embed timestamp shows when it was last updated.
 	e := &discordgo.MessageEmbed{
-		Title: "Week of " + weekStr,
-		Color: weekEmbedColor,
+		Title:     "Week of " + weekStr,
+		Color:     weekEmbedColor,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: fmt.Sprintf("%d of %d members submitted\nSee /culvert-help for more information", len(rows), rosterCount),
 		},
@@ -318,9 +319,8 @@ const weekTableRowCap = 25
 // submitter. Shared by the weekly thread table and /culvert-all.
 func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevByID map[int64]weekScore) *discordgo.MessageEmbed {
 	e := &discordgo.MessageEmbed{
-		Title:     title,
-		Color:     weekEmbedColor,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Title: title,
+		Color: weekEmbedColor,
 	}
 	if len(rows) == 0 {
 		e.Description = "No scores recorded yet this week."
