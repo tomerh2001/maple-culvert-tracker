@@ -143,6 +143,20 @@ func defectsWarning(defects []string) string {
 	return "\n:warning: Parse anomalies:\n- " + strings.Join(capList(defects, 5), "\n- ")
 }
 
+// orList renders a candidate list as "A", "A or B", or "A, B, or C".
+func orList(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " or " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + ", or " + items[len(items)-1]
+	}
+}
+
 // capList truncates a list to n items, appending a "... and X more" marker.
 func capList(items []string, n int) []string {
 	if len(items) <= n {

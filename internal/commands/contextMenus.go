@@ -160,8 +160,16 @@ func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores m
 	// flags them so an admin can later /unregister the stub and /register the
 	// full name.
 	truncatedRecorded := []string{}
+	ambiguousRecorded := []string{}
 	for _, e := range oc.merged {
-		if !e.Matched && e.Ellipsis {
+		switch {
+		case e.Ambiguous:
+			// A truncated prefix that fits two or more registered members: it
+			// was NOT attributed to any of them (never guess). Record it under
+			// the raw stub and flag the tie so the submitter can resolve it.
+			ambiguousRecorded = append(ambiguousRecorded,
+				"`"+e.Name+"` (could be "+orList(e.AmbiguousCandidates)+")")
+		case !e.Matched && e.Ellipsis:
 			truncatedRecorded = append(truncatedRecorded, e.Name)
 		}
 		scores[e.Name] = e.Score
@@ -173,6 +181,11 @@ func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores m
 		warnings += "\n:warning: " + strconv.Itoa(len(truncatedRecorded)) +
 			" name(s) look truncated in-game and were recorded as shown: `" + strings.Join(capList(truncatedRecorded, 10), "`, `") +
 			"` - to fix one later, `/unregister` the short name and `/register` the full one."
+	}
+	if len(ambiguousRecorded) > 0 {
+		warnings += "\n:warning: Ambiguous truncated name(s): " +
+			strings.Join(capList(ambiguousRecorded, 10), "; ") +
+			" - recorded as shown; set the right one with `/set-culvert`."
 	}
 	return warnings, true
 }

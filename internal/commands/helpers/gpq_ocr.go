@@ -475,6 +475,12 @@ type ScoreEntry struct {
 	// decode is an INCOMPLETE prefix of the real character name, so when it
 	// matches no tracked character it must never be auto-tracked as-is.
 	Ellipsis bool
+	// Ambiguous is set when a possibly-truncated decode is a prefix of TWO OR
+	// MORE registered members: which one it is cannot be known, so the row is
+	// left as its raw stub (never guessed onto a member) and the caller is
+	// asked to disambiguate. AmbiguousCandidates carries the tied member names.
+	Ambiguous           bool
+	AmbiguousCandidates []string
 }
 
 // parsedRow is one raw parsed table row before any roster reconciliation:
@@ -518,6 +524,22 @@ func resolveRows(rows []parsedRow, members []string, defects *[]string) []ScoreE
 		if matched {
 			entries[idx].Name = member
 			entries[idx].Matched = true
+			continue
+		}
+		// Fuzzy reconciliation declined. A name the game may have TRUNCATED to a
+		// prefix (the decode carried ellipsis evidence, or it is at/above the
+		// truncation width) can still map onto a strictly-longer registered
+		// member - but only when EXACTLY ONE member fits. Two or more is a tie
+		// we refuse to guess: the row keeps its raw stub and is flagged so the
+		// submitter can disambiguate. Zero simply leaves the raw stub.
+		switch cands := prefixTruncationCandidates(entries[idx].RawName, ellipsis[idx], members); {
+		case len(cands) == 1:
+			entries[idx].Name = cands[0]
+			entries[idx].Matched = true
+			entries[idx].Confidence = truncationMatchConfidence
+		case len(cands) >= 2:
+			entries[idx].Ambiguous = true
+			entries[idx].AmbiguousCandidates = cands
 		}
 	}
 
@@ -1287,6 +1309,90 @@ func reconcileNameConfidence(dec string, ellipsis bool, members []string) (strin
 		return bestMember, best, true
 	}
 	return dec, best, false
+}
+
+// ── Prefix-truncation reconciliation (never-guess) ──────────────────────────
+
+// gpqTruncationWidth is the minimum visible-glyph count at which the game may
+// have truncated a name. Observed truncations on real captures cut long names
+// to an 8-9 glyph prefix plus "..", so a clean decode shorter than this is a
+// FULL name and must NEVER be folded into a longer registered character (e.g.
+// "Stoic" must not become "Stoically"). Only an engine-flagged ellipsis lets a
+// shorter decode be treated as truncated.
+const gpqTruncationWidth = 8
+
+// truncationMatchConfidence is assigned to a unique prefix-truncation match (a
+// decoded prefix that exactly one roster member extends). High, but below an
+// exact decode's 1.0 so exact matches always win a collision.
+const truncationMatchConfidence = 0.97
+
+// hasRunePrefix reports whether p is a leading run of s.
+func hasRunePrefix(s, p []rune) bool {
+	if len(p) > len(s) {
+		return false
+	}
+	for i := range p {
+		if s[i] != p[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// truncatedPrefixOf reports whether normalised decode dr is a plausible
+// game-truncation prefix of normalised roster member mr. Both are already
+// l/I/i-folded by normName; ellipsis is the decode's truncation evidence. The
+// member must be strictly longer than the visible decode; how much longer, and
+// whether the decode's final glyph may be a ".." misread, depends on that
+// evidence:
+//   - Clean prefix (dr leads mr): a real truncation dropped the ".." plus
+//     hidden characters. With an engine-flagged ellipsis one extra member
+//     glyph suffices; WITHOUT one, require two, so a name merely one glyph
+//     shorter than a member ("StellaMari" vs "StellaMaris") is not mistaken
+//     for a truncation.
+//   - Last-glyph misread (dr minus its final glyph leads mr): trusted ONLY
+//     with ellipsis evidence - that is exactly when OCR turns the truncation
+//     dots into a stray letter (e.g. "FangAvengD" for "FangAveng..").
+func truncatedPrefixOf(dr, mr []rune, ellipsis bool) bool {
+	n, m := len(dr), len(mr)
+	if m <= n {
+		return false // a truncation is strictly shorter than the real name
+	}
+	if hasRunePrefix(mr, dr) {
+		if ellipsis {
+			return m >= n+1
+		}
+		return m >= n+2
+	}
+	if ellipsis && n >= 4 && hasRunePrefix(mr, dr[:n-1]) {
+		return true // m > n already guaranteed above
+	}
+	return false
+}
+
+// prefixTruncationCandidates returns the roster members that decoded name dec
+// could be a game-truncated prefix of - the basis for never-guess
+// reconciliation: exactly one candidate is a safe auto-match, two or more is
+// an ambiguity to flag (never attribute), none leaves the raw stub. A decode
+// shorter than the truncation width is a full name and is considered only when
+// the engine itself flagged the ellipsis dots. Matching is roster-order
+// independent (the caller decides among the returned members).
+func prefixTruncationCandidates(dec string, ellipsis bool, members []string) []string {
+	dr := []rune(normName(dec))
+	n := len(dr)
+	if n < 3 {
+		return nil
+	}
+	if n < gpqTruncationWidth && !ellipsis {
+		return nil // short full name - never a prefix without ellipsis evidence
+	}
+	var cands []string
+	for _, mem := range members {
+		if truncatedPrefixOf(dr, []rune(normName(mem)), ellipsis) {
+			cands = append(cands, mem)
+		}
+	}
+	return cands
 }
 
 // levenshtein returns the edit distance between a and b (names are short, so

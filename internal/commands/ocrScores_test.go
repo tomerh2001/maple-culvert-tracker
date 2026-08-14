@@ -18,7 +18,12 @@ func TestCollectUnmatchedPreservesParsedOrderAndScores(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("collectUnmatched returned %d entries, want 2", len(got))
 	}
-	if got[0] != entries[0] || got[1] != entries[2] {
+	// ScoreEntry carries a slice field (AmbiguousCandidates) so it is no longer
+	// comparable with ==; check the identifying fields instead.
+	sameEntry := func(a, b helpers.ScoreEntry) bool {
+		return a.Name == b.Name && a.RawName == b.RawName && a.Score == b.Score && a.Matched == b.Matched
+	}
+	if !sameEntry(got[0], entries[0]) || !sameEntry(got[1], entries[2]) {
 		t.Fatalf("collectUnmatched returned %#v, want %#v then %#v", got, entries[0], entries[2])
 	}
 }
