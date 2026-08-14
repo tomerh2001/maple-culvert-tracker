@@ -74,9 +74,9 @@ func TestBuildWeeklySummaryEmbed(t *testing.T) {
 	}
 }
 
-// BuildWeekTableEmbed renders at most the top 25 rows and folds the rest into a
-// trailing "... and N more (top 25 shown)" line, while the footer's coverage
-// still counts EVERY submitter.
+// BuildWeekTableEmbed renders the board as a 3-column inline-field grid (rank /
+// character / score), capping at the top 25 rows while the footer's coverage
+// still counts EVERY submitter and flags the cap.
 func TestBuildWeekTableEmbedTop25Cap(t *testing.T) {
 	rows := make([]weekScore, 0, 30)
 	for rank := 1; rank <= 30; rank++ {
@@ -88,29 +88,36 @@ func TestBuildWeekTableEmbedTop25Cap(t *testing.T) {
 		})
 	}
 
-	e := BuildWeekTableEmbed("Full table", 30, rows, nil)
+	e := BuildWeekTableEmbed("Top 25", 30, rows, nil)
 
-	if e.Footer == nil || e.Footer.Text != "30 of 30 members submitted" {
-		t.Errorf("coverage footer must count all rows, got %+v", e.Footer)
+	// Coverage counts ALL submitters and notes the cap.
+	if e.Footer == nil || e.Footer.Text != "30 of 30 members submitted • top 25 shown" {
+		t.Errorf("coverage footer = %+v", e.Footer)
 	}
-	if !strings.Contains(e.Description, "... and 5 more (top 25 shown)") {
-		t.Errorf("expected top-25 overflow line, description:\n%s", e.Description)
+	// Three side-by-side inline columns.
+	if len(e.Fields) != 3 {
+		t.Fatalf("expected 3 inline fields, got %d", len(e.Fields))
 	}
-	// Rank 25 rendered, rank 26 folded away.
-	if !strings.Contains(e.Description, namePad(25)) {
+	for _, f := range e.Fields {
+		if !f.Inline {
+			t.Errorf("field %q must be inline for a grid layout", f.Name)
+		}
+		if got := strings.Count(f.Value, "\n") + 1; got != 25 {
+			t.Errorf("field %q rendered %d rows, want 25 (cap)", f.Name, got)
+		}
+	}
+	// Rank 25 rendered in the name column, rank 26 capped out.
+	nameCol := e.Fields[1].Value
+	if !strings.Contains(nameCol, namePad(25)) {
 		t.Errorf("rank 25 (%s) should be rendered", namePad(25))
 	}
-	if strings.Contains(e.Description, namePad(26)) {
+	if strings.Contains(nameCol, namePad(26)) {
 		t.Errorf("rank 26 (%s) should be capped out", namePad(26))
 	}
-	// 25 rendered rows + one overflow line.
-	if lines := strings.Count(e.Description, "\n") + 1; lines != 26 {
-		t.Errorf("rendered %d lines, want 26 (25 rows + overflow)", lines)
-	}
 
-	// 25 rows exactly -> no overflow line.
-	if e25 := BuildWeekTableEmbed("Full table", 25, rows[:25], nil); strings.Contains(e25.Description, "more (top 25 shown)") {
-		t.Errorf("exactly 25 rows must not show an overflow line:\n%s", e25.Description)
+	// 25 rows exactly -> no cap note in the footer.
+	if e25 := BuildWeekTableEmbed("Top 25", 25, rows[:25], nil); strings.Contains(e25.Footer.Text, "top 25 shown") {
+		t.Errorf("exactly 25 rows must not flag the cap: %q", e25.Footer.Text)
 	}
 }
 

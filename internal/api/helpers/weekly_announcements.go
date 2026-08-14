@@ -293,11 +293,13 @@ const WeekEmbedColor = weekEmbedColor
 // personal-best computation still see EVERY row (only the render is capped).
 const weekTableRowCap = 25
 
-// BuildWeekTableEmbed renders the week's ranked board as a Discord-native
-// embed (no ASCII tables): medals for the top three, bold names, thousands
-// separators, and rank movement vs the previous week. Only the top 25 rows are
-// rendered (rows arrive score-desc); the footer's coverage still counts all
-// submitters. Shared by the weekly thread table and /culvert-all.
+// BuildWeekTableEmbed renders the week's ranked board as a Discord-native grid:
+// three side-by-side inline fields (rank / character / score) so the columns
+// line up instead of reading as one run of text. Medals mark the top three;
+// rank movement vs the previous week rides on the name so the score column
+// stays a clean number column; scores get thousands separators. Only the top 25
+// rows are rendered (rows arrive score-desc); the footer's coverage still counts
+// every submitter. Shared by the weekly thread table and /culvert-all.
 func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevByID map[int64]weekScore) *discordgo.MessageEmbed {
 	e := &discordgo.MessageEmbed{
 		Title:     title,
@@ -308,10 +310,6 @@ func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevBy
 		e.Description = "No scores recorded yet this week."
 		return e
 	}
-	// Coverage counts ALL submitters; only the rendered rows are capped.
-	e.Footer = &discordgo.MessageEmbedFooter{
-		Text: fmt.Sprintf("%d of %d members submitted", len(rows), rosterCount),
-	}
 
 	shown := rows
 	overflow := 0
@@ -320,50 +318,47 @@ func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevBy
 		shown = shown[:weekTableRowCap]
 	}
 
-	medals := []string{":first_place:", ":second_place:", ":third_place:"}
-	lines := make([]string, 0, len(shown))
+	// Coverage counts ALL submitters; only the rendered rows are capped.
+	coverage := fmt.Sprintf("%d of %d members submitted", len(rows), rosterCount)
+	if overflow > 0 {
+		coverage += fmt.Sprintf(" • top %d shown", weekTableRowCap)
+	}
+	e.Footer = &discordgo.MessageEmbedFooter{Text: coverage}
+
+	var rankCol, nameCol, scoreCol strings.Builder
 	for idx, r := range shown {
-		prefix := fmt.Sprintf("`#%2d`", r.Rank)
+		if idx > 0 {
+			rankCol.WriteByte('\n')
+			nameCol.WriteByte('\n')
+			scoreCol.WriteByte('\n')
+		}
+		fmt.Fprintf(&rankCol, "%d", r.Rank)
+		// Keep every cell pure text (no emoji) so the three columns stay
+		// row-aligned - emoji lines render taller and would skew the grid.
+		// Medals live in the channel summary; here the top three are bolded.
 		name := r.Name
-		if idx < len(medals) {
-			prefix = medals[idx]
+		if idx < 3 {
 			name = "**" + name + "**"
 		}
-		line := prefix + " " + name + " - " + FormatThousands(r.Score)
+		// Rank movement rides on the name as plain text, keeping the score
+		// column a clean number column.
 		if p, ok := prevByID[r.CharacterID]; ok {
 			switch {
 			case p.Rank > r.Rank:
-				line += fmt.Sprintf(" (:arrow_up: %d)", p.Rank-r.Rank)
+				name += fmt.Sprintf(" (+%d)", p.Rank-r.Rank)
 			case p.Rank < r.Rank:
-				line += fmt.Sprintf(" (:arrow_down: %d)", r.Rank-p.Rank)
+				name += fmt.Sprintf(" (-%d)", r.Rank-p.Rank)
 			}
-		} else if len(prevByID) > 0 {
-			line += " (new)"
 		}
-		lines = append(lines, line)
+		nameCol.WriteString(name)
+		scoreCol.WriteString(FormatThousands(r.Score))
 	}
 
-	// Discord caps embed descriptions at 4096 characters: keep whole lines and
-	// fold any char-overflow into the same "... and N more" count as the 25-row
-	// cap rather than truncating mid-line.
-	b := &strings.Builder{}
-	for idx, line := range lines {
-		if b.Len()+len(line)+60 > 4096 {
-			overflow += len(lines) - idx
-			break
-		}
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
+	e.Fields = []*discordgo.MessageEmbedField{
+		{Name: "#", Value: rankCol.String(), Inline: true},
+		{Name: "Character", Value: nameCol.String(), Inline: true},
+		{Name: "Score", Value: scoreCol.String(), Inline: true},
 	}
-	if overflow > 0 {
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		fmt.Fprintf(b, "... and %d more (top %d shown)", overflow, weekTableRowCap)
-	}
-	e.Description = b.String()
 	return e
 }
 
