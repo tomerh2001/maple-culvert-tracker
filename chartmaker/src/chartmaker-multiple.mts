@@ -18,7 +18,7 @@ const dataColors = [
 
 export const chartmakerMultiple = (data: {
   labels: string[]
-  dataPlots: { characterName: string; scores: number[] }[]
+  dataPlots: { characterName: string; scores: (number | null)[] }[]
 }): Buffer => {
   const width = data.labels.length <= 8 ? 1000 : 125 * data.labels.length
   let height = data.dataPlots.length * 10
@@ -59,7 +59,9 @@ export const chartmakerMultiple = (data: {
             weight: "bold",
             family: fontFamily,
           },
-          formatter: Math.round,
+          // Skip labels for gap (null) points; round real scores as before.
+          formatter: (value: number | null) =>
+            value == null ? null : Math.round(value),
           padding: 6,
         },
       },

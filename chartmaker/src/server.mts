@@ -36,10 +36,12 @@ app.post("/chartmaker-multiple", (req, res) => {
     !req.body.labels.every((label: string) => typeof label === "string") ||
     !Array.isArray(req.body.dataPlots) ||
     !req.body.dataPlots.every(
-      (plot: { characterName: string; scores: number[] }) =>
+      (plot: { characterName: string; scores: (number | null)[] }) =>
         typeof plot.characterName === "string" &&
         Array.isArray(plot.scores) &&
-        plot.scores.every(score => typeof score === "number") &&
+        // null marks a week the character has no score for: it is drawn as a
+        // gap (spanGaps bridges it). All-number arrays validate as before.
+        plot.scores.every(score => score === null || typeof score === "number") &&
         req.body.labels.length === plot.scores.length,
     )
   ) {
