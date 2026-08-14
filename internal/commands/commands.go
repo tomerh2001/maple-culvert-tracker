@@ -24,10 +24,10 @@ var Commands = []*discordgo.ApplicationCommand{
 		Description: "Link a MapleStory character to a Discord account (yours by default)",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Required:    true,
+				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "name",
-				Description: "The in-game character name",
+				Description: "The in-game character name (default: reads the IGNs from your server nickname)",
 			},
 			{
 				Required:    false,

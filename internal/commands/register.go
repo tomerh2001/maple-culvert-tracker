@@ -21,8 +21,82 @@ func characterOwnedByAnother(existingOwner, targetID string) bool {
 		existingOwner != "1" && existingOwner != "2" && existingOwner != ""
 }
 
+// registerOutcome is the result of linking one IGN (see registerIGN). It lets
+// both the single-name path and the nickname-parsing path share one code path
+// while formatting their own replies.
+type registerOutcome int
+
+const (
+	regRegistered     registerOutcome = iota // newly inserted or (re)linked
+	regAlreadyYours                          // already linked to the target (no-op)
+	regOwnedByAnother                        // owned by a different real member, refused
+	regError                                 // a database error occurred
+)
+
+// registerResult carries the canonical name plus the outcome of one IGN.
+type registerResult struct {
+	name     string          // canonical spelling (rankings) or the input if unverified
+	outcome  registerOutcome // what happened
+	owner    string          // existing owner id, only set for regOwnedByAnother
+	verified bool            // true when the rankings confirmed the spelling
+}
+
+// registerIGN canonicalises one IGN against the official rankings (ADVISORY: a
+// lookup failure or miss never blocks registration) and then inserts or
+// (re)links its character row for targetID within the tenant, applying the
+// ownership gate. It performs NO Discord reply, so the single explicit-name
+// path and the nickname path share exactly this logic. canSubmit lets a
+// submitter/admin move a name owned by another real member.
+func registerIGN(tenant, name, targetID string, canSubmit bool) registerResult {
+	res := registerResult{name: name, verified: true}
+	charData, err := helpers.FetchCharacterData(name, apiredis.OPTIONAL_CONF_MAPLE_REGION.For(tenant).GetWithDefault(apiredis.RedisDB, "na"))
+	if err != nil || charData == nil {
+		res.verified = false
+	} else {
+		res.name = charData.CharacterName
+	}
+
+	var existingID int64
+	var existingOwner string
+	err = db.DB.QueryRow(
+		`SELECT id, discord_user_id FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND guild_id = $2`,
+		res.name, tenant).Scan(&existingID, &existingOwner)
+	switch {
+	case err == sql.ErrNoRows:
+		if _, err := db.DB.Exec(
+			`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, $2, $3)`,
+			res.name, targetID, tenant); err != nil {
+			log.Println("register: insert failed:", err)
+			res.outcome = regError
+			return res
+		}
+		res.outcome = regRegistered
+	case err != nil:
+		log.Println("register: lookup failed:", err)
+		res.outcome = regError
+	case existingOwner == targetID:
+		res.outcome = regAlreadyYours
+	case characterOwnedByAnother(existingOwner, targetID) && !canSubmit:
+		res.outcome = regOwnedByAnother
+		res.owner = existingOwner
+	default:
+		// Unlinked, or a submitter/admin relinking it to the target.
+		if _, err := db.DB.Exec(
+			`UPDATE characters SET discord_user_id = $1 WHERE id = $2`,
+			targetID, existingID); err != nil {
+			log.Println("register: update failed:", err)
+			res.outcome = regError
+			return res
+		}
+		res.outcome = regRegistered
+	}
+	return res
+}
+
 // registerCharacter links a MapleStory character to a Discord account:
 // your own by default, or someone else's via user:@member (submitters only).
+// With no name: it infers the caller's IGNs from their server nickname (see
+// registerFromNickname).
 func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r := deferReply(s, i, true)
 	tenant := tenantOf(i)
@@ -30,6 +104,7 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	characterName := ""
 	callerID := i.Member.User.ID
 	targetID := callerID
+	userGiven := false
 	for _, v := range i.ApplicationCommandData().Options {
 		switch v.Name {
 		case "name":
@@ -37,29 +112,22 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		case "user":
 			if u := v.UserValue(nil); u != nil {
 				targetID = u.ID
+				userGiven = true
 			}
 		}
 	}
+
+	// No explicit name -> infer the caller's IGNs from their server nickname.
 	if characterName == "" {
-		r.Edit("Please provide the character name: `/register name:YourCharacter`")
+		registerFromNickname(s, i, r, tenant, callerID, userGiven)
 		return
 	}
 
+	canSubmit := canSubmitScores(i)
 	forOther := targetID != callerID
-	if forOther && !canSubmitScores(i) {
+	if forOther && !canSubmit {
 		r.Edit("Registering a character for someone else needs submitter permissions. They can register themselves with `/register name:TheirCharacter`.")
 		return
-	}
-
-	// Normalise capitalisation against the official rankings when possible.
-	// The check is ADVISORY: a lookup failure or miss never blocks
-	// registration, it only adds a warning to the receipt.
-	warning := ""
-	charData, err := helpers.FetchCharacterData(characterName, apiredis.OPTIONAL_CONF_MAPLE_REGION.For(tenant).GetWithDefault(apiredis.RedisDB, "na"))
-	if err != nil || charData == nil {
-		warning = "\n:warning: I couldn't verify `" + characterName + "` against the official rankings - double-check the spelling (`/unregister` + `/register` fixes typos)."
-	} else {
-		characterName = charData.CharacterName
 	}
 
 	who := "you"
@@ -67,47 +135,112 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		who = "<@" + targetID + ">"
 	}
 
-	var existingID int64
-	var existingOwner string
-	err = db.DB.QueryRow(
-		`SELECT id, discord_user_id FROM characters WHERE LOWER(maple_character_name) = LOWER($1) AND guild_id = $2`,
-		characterName, tenant).Scan(&existingID, &existingOwner)
-	switch {
-	case err == sql.ErrNoRows:
-		if _, err := db.DB.Exec(
-			`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ($1, $2, $3)`,
-			characterName, targetID, tenant); err != nil {
-			log.Println("register: insert failed:", err)
-			r.Edit("Something went wrong saving the character. Please try again later.")
-			return
-		}
-	case err != nil:
-		log.Println("register: lookup failed:", err)
+	res := registerIGN(tenant, characterName, targetID, canSubmit)
+	// The rankings check is ADVISORY: an unverified name still registers, it
+	// only adds a warning to the receipt.
+	warning := ""
+	if !res.verified {
+		warning = "\n:warning: I couldn't verify `" + res.name + "` against the official rankings - double-check the spelling (`/unregister` + `/register` fixes typos)."
+	}
+	switch res.outcome {
+	case regError:
 		r.Edit("Something went wrong saving the character. Please try again later.")
 		return
-	case existingOwner == targetID:
-		r.Edit("`" + characterName + "` is already registered to " + who + ". Nothing to do!" + warning)
+	case regAlreadyYours:
+		r.Edit("`" + res.name + "` is already registered to " + who + ". Nothing to do!" + warning)
 		return
-	case characterOwnedByAnother(existingOwner, targetID) && !canSubmitScores(i):
-		r.Edit("`" + characterName + "` is already registered to <@" + existingOwner + ">. If that's wrong, ask an admin or submitter to move it with `/register name:" + characterName + " user:@the-right-person`.")
+	case regOwnedByAnother:
+		r.Edit("`" + res.name + "` is already registered to <@" + res.owner + ">. If that's wrong, ask an admin or submitter to move it with `/register name:" + res.name + " user:@the-right-person`.")
 		return
-	default:
-		// Unlinked, or a submitter/admin relinking it to the target.
-		if _, err := db.DB.Exec(
-			`UPDATE characters SET discord_user_id = $1 WHERE id = $2`,
-			targetID, existingID); err != nil {
-			log.Println("register: update failed:", err)
-			r.Edit("Something went wrong saving the character. Please try again later.")
-			return
-		}
 	}
 
 	warning += refreshWeeklyLine(s, i)
 	if forOther {
-		r.Edit("Done! `" + characterName + "` is now registered to " + who + ". :tada:" + warning)
+		r.Edit("Done! `" + res.name + "` is now registered to " + who + ". :tada:" + warning)
 		return
 	}
-	r.Edit("Done! `" + characterName + "` is now registered to you. :tada:" + warning + "\nTry `/culvert` to see your progression once your scores are in.")
+	r.Edit("Done! `" + res.name + "` is now registered to you. :tada:" + warning + "\nTry `/culvert` to see your progression once your scores are in.")
+}
+
+// registerFromNickname handles `/register` with no name: it parses the caller's
+// server nickname into IGNs (see parseNicknameIGNs) and registers each for the
+// CALLER only, replying with one combined ephemeral receipt. The user: option
+// is intentionally ignored here - a nickname only ever describes its own owner
+// - so we require an explicit name: when user: is set rather than parse a
+// nickname on someone else's behalf.
+func registerFromNickname(s *discordgo.Session, i *discordgo.InteractionCreate, r *reply, tenant, callerID string, userGiven bool) {
+	if userGiven {
+		r.Edit("To register for someone else, include the character name: `/register name:TheirCharacter user:@member`. Without a name I can only read *your* nickname.")
+		return
+	}
+
+	source := i.Member.Nick
+	if source == "" {
+		source = i.Member.User.GlobalName
+	}
+	if source == "" {
+		source = i.Member.User.Username
+	}
+	igns := parseNicknameIGNs(source)
+	if len(igns) == 0 {
+		r.Edit("I couldn't find any character names in your server nickname. Register explicitly with `/register name:YourCharacter`.")
+		return
+	}
+
+	canSubmit := canSubmitScores(i)
+	seen := map[string]bool{}
+	var registered, alreadyYours, ownedByOther, failed, unverified []string
+	for _, ign := range igns {
+		if key := strings.ToLower(ign); seen[key] {
+			continue // ignore a name repeated within the nickname
+		} else {
+			seen[key] = true
+		}
+		res := registerIGN(tenant, ign, callerID, canSubmit)
+		switch res.outcome {
+		case regRegistered:
+			registered = append(registered, res.name)
+		case regAlreadyYours:
+			alreadyYours = append(alreadyYours, res.name)
+		case regOwnedByAnother:
+			ownedByOther = append(ownedByOther, res.name)
+		case regError:
+			failed = append(failed, res.name)
+		}
+		// Flag unverified spelling only where it registered or was already
+		// yours - it's noise on a name owned by someone else or a DB failure.
+		if !res.verified && (res.outcome == regRegistered || res.outcome == regAlreadyYours) {
+			unverified = append(unverified, res.name)
+		}
+	}
+
+	parts := []string{}
+	if len(registered) > 0 {
+		parts = append(parts, "Registered: "+quoteList(registered))
+	}
+	if len(alreadyYours) > 0 {
+		parts = append(parts, "already yours: "+quoteList(alreadyYours))
+	}
+	if len(ownedByOther) > 0 {
+		parts = append(parts, "skipped (owned by someone else): "+quoteList(ownedByOther))
+	}
+	if len(failed) > 0 {
+		parts = append(parts, "couldn't save: "+quoteList(failed))
+	}
+	receipt := strings.Join(parts, "; ")
+	if receipt != "" { // capitalise the leading label for a standalone sentence
+		receipt = strings.ToUpper(receipt[:1]) + receipt[1:]
+	}
+	if len(unverified) > 0 {
+		receipt += "\n:warning: Couldn't verify " + quoteList(unverified) + " against the official rankings - double-check the spelling."
+	}
+	receipt += refreshWeeklyLine(s, i)
+	r.Edit(receipt)
+}
+
+// quoteList renders names as a comma-separated backtick-quoted list.
+func quoteList(names []string) string {
+	return "`" + strings.Join(names, "`, `") + "`"
 }
 
 // unregisterCharacter untracks a character by name, or ALL characters
