@@ -261,7 +261,7 @@ func buildWeeklySummary(weekStr string, rosterCount int, rows []weekScore) strin
 		}
 	}
 	fmt.Fprintf(b, "Guild total: **%s**\n", FormatThousands(total))
-	b.WriteString("Not on the board yet? `/register` to link your character to your Discord account - see `/culvert-help`.")
+	b.WriteString("See `/culvert-help` to register your IGN to your Discord account.")
 	return b.String()
 }
 

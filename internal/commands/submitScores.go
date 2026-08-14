@@ -24,19 +24,17 @@ import (
 const pendingOverwriteTTL = 10 * time.Minute
 
 // finalizeSubmitScores runs the score submission flow once a scores map
-// (character name -> score) has been parsed from the target message: it
-// canonicalizes unknown names against the official rankings, plans the
-// submission against the tracked roster and existing week data, applies the
-// resubmit-to-confirm overwrite rule, auto-tracks unknown names, applies the
-// changes and replies with a text-only receipt. targetMessageID scopes the
-// pending overwrite confirmation to the exact message being resubmitted.
-func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, targetMessageID, resubmitHint string, submitted map[string]int, week time.Time, parseWarnings string) {
+// (character name -> score) has been parsed: it canonicalizes unknown names
+// against the official rankings, plans the submission against the tracked
+// roster and existing week data (always overwriting existing scores),
+// auto-tracks unknown names, applies the changes and replies with a text-only
+// receipt.
+func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, submitted map[string]int, week time.Time, parseWarnings string) {
 	if len(submitted) == 0 {
 		r.Edit("Nothing was parsed from that input - no changes were made.")
 		return
 	}
 	tenant := tenantOf(i)
-	weekStr := week.Format(time.DateOnly)
 	weekLabel := helpers.FormatWeekLabel(week, time.Now())
 
 	characters, rosterMeta, err := helpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB, tenant)
@@ -84,25 +82,10 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 	// their decode with a "spelling unverified" receipt note.
 	unverified := canonicalizeSubmitted(tenant, submitted, tracked)
 
-	plan := planSubmission(tracked, submitted, false)
-
-	pendingKey := apiredis.PendingOverwriteKey(i.Member.User.ID, targetMessageID, weekStr).For(tenant)
-	pendingMatch := pendingKey.GetWithDefault(apiredis.RedisDB, "") != ""
-	overwrite, storePending := overwriteDecision(len(plan.Conflicts) > 0, pendingMatch)
-
-	if storePending {
-		if err := pendingKey.SetEx(apiredis.RedisDB, "1", pendingOverwriteTTL); err != nil {
-			log.Println("submitScores: storing pending overwrite confirmation failed:", err)
-		}
-		msg := fmt.Sprintf("%d existing score(s) for %s differ from the submitted values - no changes were made.",
-			len(plan.Conflicts), weekLabel)
-		msg += "\n" + resubmitHint
-		r.EditWithTable(msg, formatConflictsTable(plan.Conflicts))
-		return
-	}
-	if overwrite {
-		plan = planSubmission(tracked, submitted, true)
-	}
+	// Submissions ALWAYS overwrite existing scores for the week - no
+	// resubmit-to-confirm step. A misread is fixed by resubmitting or with
+	// /set-culvert / /reset-week.
+	plan := planSubmission(tracked, submitted, true)
 
 	existingCount := 0
 	for _, t := range tracked {
@@ -140,10 +123,6 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		log.Println("submitScores: upsert failed:", err)
 		r.Edit("Score submission failed while writing to the database - no scores were written. See server logs for details.")
 		return
-	}
-	// Any successful apply consumes/invalidates the pending confirmation.
-	if err := pendingKey.Del(apiredis.RedisDB); err != nil && !errors.Is(err, apiredis.ErrNoRedis) {
-		log.Println("submitScores: clearing pending overwrite confirmation failed:", err)
 	}
 
 	// Receipt: recorded/new/overwritten/auto-tracked + coverage +

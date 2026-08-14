@@ -153,12 +153,12 @@ func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			r.Edit("`" + realName + "` isn't registered to you - untracking someone else's character needs submitter permissions.")
 			return
 		}
-		if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '1' WHERE id = $1`, charID); err != nil {
+		if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '2' WHERE id = $1`, charID); err != nil {
 			log.Println("unregister: update failed:", err)
 			r.Edit("Something went wrong. Please try again later.")
 			return
 		}
-		r.Edit("`" + realName + "` is no longer tracked. Its history is kept and it can be re-registered anytime." + refreshWeeklyLine(s, i))
+		r.Edit("`" + realName + "` is no longer linked to your Discord account. Its scores stay on the board - `/register` links it back anytime." + refreshWeeklyLine(s, i))
 		return
 	}
 
@@ -191,10 +191,10 @@ func unregisterCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		r.Edit("No characters are registered to " + who + " - nothing to do.")
 		return
 	}
-	if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '1' WHERE discord_user_id = $1 AND guild_id = $2`, targetID, tenant); err != nil {
+	if _, err := db.DB.Exec(`UPDATE characters SET discord_user_id = '2' WHERE discord_user_id = $1 AND guild_id = $2`, targetID, tenant); err != nil {
 		log.Println("unregister: bulk update failed:", err)
 		r.Edit("Something went wrong. Please try again later.")
 		return
 	}
-	r.Edit("Untracked `" + strings.Join(capList(names, 25), "`, `") + "` (registered to " + who + "). History is kept; `/register` re-links anytime." + refreshWeeklyLine(s, i))
+	r.Edit("Unlinked `" + strings.Join(capList(names, 25), "`, `") + "` from " + who + ". Their scores stay on the board; `/register` re-links anytime." + refreshWeeklyLine(s, i))
 }

@@ -33,16 +33,27 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
+	// Optional date option: submit these screenshots for a specific week
+	// (YYYY-MM-DD or a Discord timestamp), refreshing that week's message.
 	week := helpers.CurrentCulvertWeek(time.Now())
+	for _, opt := range i.ApplicationCommandData().Options {
+		if opt.Name == "date" {
+			d, err := parseFlexibleDate(opt.StringValue())
+			if err != nil {
+				r.Edit(badDateMessage)
+				return
+			}
+			week = helpers.GetCulvertResetDate(d)
+		}
+	}
+
 	scores := map[string]int{}
 	parseWarnings, ok := scoresFromImageURLs(r, tenant, imageURLs, scores)
 	if !ok {
 		return
 	}
 
-	finalizeSubmitScores(s, r, i, "slash-submit",
-		"Run `/submit-scores` again with the same screenshots within 10 minutes to overwrite these scores.",
-		scores, week, parseWarnings)
+	finalizeSubmitScores(s, r, i, scores, week, parseWarnings)
 }
 
 // commandImageURLs collects the image attachment URLs supplied to a slash

@@ -3,35 +3,43 @@ package commands
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
+// culvertResetLine renders the NEXT weekly reset as Discord timestamps so
+// every reader sees it in their own timezone - no hard-coded clock time.
+func culvertResetLine() string {
+	// CurrentCulvertWeek returns the current week's Wednesday key (00:00 UTC);
+	// the week spans [key+1d, key+8d), so key+8d is the upcoming reset.
+	next := helpers.CurrentCulvertWeek(time.Now()).AddDate(0, 0, 8)
+	u := next.Unix()
+	return fmt.Sprintf("The culvert week resets weekly - next reset <t:%d:F> (<t:%d:R>).", u, u)
+}
+
 const helpText = `## Culvert Tracker - how to use it
 
 **1. Link your character(s) (once)**
-Type ` + "`/register`" + ` and enter your in-game character name.
-That connects your MapleStory character to your Discord account.
-Got mules? Run ` + "`/register`" + ` once per character - link as many as you like.
-- ` + "`/characters`" + ` - list a member's linked characters (yours by default)
-- ` + "`/registered`" + ` - list everyone who has linked a character
+Type ` + "`/register`" + ` and enter your in-game character name. That connects your MapleStory character to your Discord account. Run ` + "`/register`" + ` once per IGN, you can do it multiple times for each mule.
 - ` + "`/unregister name:YourCharacter`" + ` - remove one by name (history is kept)
+- ` + "`/characters`" + ` - list your registered characters.
 
 **2. See your progress**
 - ` + "`/culvert`" + ` - your weekly culvert scores as a chart
-- ` + "`/culvert name:@someone`" + ` - a member's chart (or right click them -> Apps -> **Culvert**)
-- ` + "`/culvert name:SomeChar`" + ` - any tracked character by name
-- Add ` + "`from:`" + `/` + "`to:`" + ` (YYYY-MM-DD or a Discord timestamp) to bound the chart
+- Add ` + "`from:`" + `/` + "`to:`" + ` (YYYY-MM-DD or a Discord timestamp) to filter a specific time window
 
-**3. Guild-wide stats**
-` + "`/culvert-all`" + ` - the guild's scores for a week (add ` + "`date:`" + ` for past weeks)
+**3. How scores get in**
+Submitters submit a screenshot of the in-game ranking two ways:
+1. Right click the message -> Apps -> **Submit Scores**.
+2. Using ` + "`/submit-scores`" + `.
 
-**4. How scores get in**
-Submitters submit a screenshot of the in-game ranking two ways: right click the message -> Apps -> **Submit Scores**, or attach it to ` + "`/submit-scores`" + `. Single-score corrections go through ` + "`/set-culvert`" + `. If your score is missing, poke a submitter.
+Single-score corrections go through ` + "`/set-culvert`" + `.
+If your score is missing, let an admin know.
 
-The culvert week rolls over at **Thursday 00:00 UTC** (03:00 Israel summer time).
+%%RESET%%
 Every server has its own private data - characters and scores never mix between servers.
 
 *Admins: type ` + "`/setup`" + ` for the setup guide.*
@@ -55,7 +63,7 @@ Members self-serve with ` + "`/register`" + ` (submitters can link anyone: ` + "
 
 **4. Submit scores weekly**
 Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine). Submit it either way: right click the posted message -> Apps -> **Submit Scores**, or attach it to ` + "`/submit-scores`" + ` (up to 5 screenshots for a long roster).
-- Scores land on the current culvert week; the week rolls over at **Thursday 00:00 UTC** (03:00 Israel summer time)
+- Scores land on the current culvert week (it rolls over weekly)
 - If some scores already exist with different values, nothing is written: the bot shows the conflicts and asks you to submit the same screenshots again within 10 minutes to confirm the overwrite
 - Single fixes (typos, missed rows, past weeks): ` + "`/set-culvert name:X score:123 date:YYYY-MM-DD`" + `
 
@@ -65,7 +73,7 @@ Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status*
 *Created by [Tomerh2001](<https://github.com/tomerh2001/maple-culvert-tracker>)*`
 
 func helpCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	deferReply(s, i, true).EditChunked(helpText)
+	deferReply(s, i, true).EditChunked(strings.ReplaceAll(helpText, "%%RESET%%", culvertResetLine()))
 }
 
 func setupCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {

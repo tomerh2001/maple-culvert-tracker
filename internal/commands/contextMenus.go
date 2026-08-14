@@ -74,9 +74,7 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	finalizeSubmitScores(s, r, i, msg.ID,
-		"Right-click -> **Submit Scores** on the same message again within 10 minutes to overwrite these scores.",
-		scores, week, parseWarnings)
+	finalizeSubmitScores(s, r, i, scores, week, parseWarnings)
 }
 
 // scoresFromMessage fills scores from a message: a pre-parsed .txt/.json

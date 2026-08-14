@@ -142,6 +142,12 @@ var Commands = []*discordgo.ApplicationCommand{
 				Name:        "screenshot-5",
 				Description: "Another page of the roster (optional)",
 			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "date",
+				Description: "Which week these are for (YYYY-MM-DD or a Discord timestamp; default: this week)",
+			},
 		},
 	},
 	{
