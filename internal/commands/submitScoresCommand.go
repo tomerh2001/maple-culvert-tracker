@@ -6,6 +6,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
 // submitScoresCommand is the /submit-scores slash command: it OCRs the
@@ -64,6 +65,14 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if err != nil {
 			log.Println("submitScoresCommand: fetch linked message:", err)
 			r.Edit("Failed to fetch the linked message - check the link and that the bot can read that channel.")
+			return
+		}
+		// A message-link must point at THIS server's data - never let one
+		// tenant pull another server's screenshots (the link only carries
+		// channel+message ids, so the bot could otherwise read any channel it
+		// can see).
+		if data.TenantID(msg.GuildID) != tenant {
+			r.Edit("That message is from a different server. You can only submit a message-link from a channel in this server.")
 			return
 		}
 		parseWarnings, ok = scoresFromMessage(s, r, tenant, msg, scores)
