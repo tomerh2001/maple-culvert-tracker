@@ -267,16 +267,35 @@ func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []
 		e.Description = b.String()
 		return e
 	}
-	medals := []string{":first_place:", ":second_place:", ":third_place:"}
 	total := 0
-	for i, r := range rows {
+	for _, r := range rows {
 		total += r.Score
-		if i < len(medals) {
-			fmt.Fprintf(b, "\n%s `%s` - %s", medals[i], r.Name, FormatThousands(r.Score))
-		}
 	}
 	fmt.Fprintf(b, "\nGuild total: **%s**", FormatThousands(total))
 	e.Description = b.String()
+
+	// Top-three podium as the same 3-column grid as the thread table (pure
+	// text so the columns stay row-aligned; top three bolded).
+	top := rows
+	if len(top) > 3 {
+		top = top[:3]
+	}
+	var rankCol, nameCol, scoreCol strings.Builder
+	for idx, r := range top {
+		if idx > 0 {
+			rankCol.WriteByte('\n')
+			nameCol.WriteByte('\n')
+			scoreCol.WriteByte('\n')
+		}
+		fmt.Fprintf(&rankCol, "%d", r.Rank)
+		fmt.Fprintf(&nameCol, "**%s**", r.Name)
+		scoreCol.WriteString(FormatThousands(r.Score))
+	}
+	e.Fields = []*discordgo.MessageEmbedField{
+		{Name: "#", Value: rankCol.String(), Inline: true},
+		{Name: "Character", Value: nameCol.String(), Inline: true},
+		{Name: "Score", Value: scoreCol.String(), Inline: true},
+	}
 	return e
 }
 

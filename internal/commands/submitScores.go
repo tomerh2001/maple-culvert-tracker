@@ -122,30 +122,40 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		return
 	}
 
-	// Receipt embed: recorded/new/overwritten/auto-tracked + coverage +
-	// announcement status, all labeled with the week helper. Rendered in the
-	// weekly embeds' color and posted ephemerally via EditData; long lists are
-	// trimmed with capList to stay under the embed limit.
-	desc := &strings.Builder{}
-	fmt.Fprintf(desc, "Recorded **%d** score(s).", len(plan.Changes))
-	if len(plan.NewNames) > 0 {
-		fmt.Fprintf(desc, "\nNew (%d): `%s`", len(plan.NewNames), strings.Join(capList(plan.NewNames, 20), "`, `"))
-	}
-	if len(plan.OverwrittenNames) > 0 {
-		fmt.Fprintf(desc, "\nOverwritten (%d): `%s`", len(plan.OverwrittenNames), strings.Join(capList(plan.OverwrittenNames, 20), "`, `"))
-	}
-	if len(autoTracked) > 0 {
-		fmt.Fprintf(desc, "\nAuto-tracked (%d): `%s` (members can `/register` to claim them)",
-			len(autoTracked), strings.Join(capList(autoTracked, 20), "`, `"))
-	}
-	if len(unverified) > 0 {
-		fmt.Fprintf(desc, "\n:warning: Spelling unverified (not found on the official rankings): `%s` - fix mistakes with `/set-culvert` after `/unregister`-ing the typo.",
-			strings.Join(capList(unverified, 10), "`, `"))
-	}
+	// Receipt embed: inline stat tiles (recorded + coverage) and one labeled
+	// field per name list, matching the weekly grid. Contextual notes
+	// (unverified spellings, announcement status, warnings) go in the
+	// description. Long lists are trimmed with capList to stay under the limit.
 	scoredAfter := existingCount + len(plan.NewNames) + autoScored
 	totalTracked := len(tracked) + len(autoTracked)
-	fmt.Fprintf(desc, "\nCoverage: %d of %d tracked characters have a score for this week.", scoredAfter, totalTracked)
+	fields := []*discordgo.MessageEmbedField{
+		{Name: "Recorded", Value: fmt.Sprintf("**%d** score(s)", len(plan.Changes)), Inline: true},
+		{Name: "Coverage", Value: fmt.Sprintf("%d of %d tracked", scoredAfter, totalTracked), Inline: true},
+	}
+	if len(plan.NewNames) > 0 {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:  fmt.Sprintf("New (%d)", len(plan.NewNames)),
+			Value: "`" + strings.Join(capList(plan.NewNames, 20), "`, `") + "`",
+		})
+	}
+	if len(plan.OverwrittenNames) > 0 {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:  fmt.Sprintf("Overwritten (%d)", len(plan.OverwrittenNames)),
+			Value: "`" + strings.Join(capList(plan.OverwrittenNames, 20), "`, `") + "`",
+		})
+	}
+	if len(autoTracked) > 0 {
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:  fmt.Sprintf("Auto-tracked (%d)", len(autoTracked)),
+			Value: "`" + strings.Join(capList(autoTracked, 20), "`, `") + "` - members can `/register` to claim them",
+		})
+	}
 
+	desc := &strings.Builder{}
+	if len(unverified) > 0 {
+		fmt.Fprintf(desc, ":warning: Spelling unverified (not found on the official rankings): `%s` - fix mistakes with `/set-culvert` after `/unregister`-ing the typo.",
+			strings.Join(capList(unverified, 10), "`, `"))
+	}
 	if len(plan.Changes) > 0 {
 		changedIDs := make([]int64, 0, len(plan.Changes))
 		for _, c := range plan.Changes {
@@ -160,7 +170,8 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		Embeds: []*discordgo.MessageEmbed{{
 			Title:       "Scores recorded - " + weekLabel,
 			Color:       apihelpers.WeekEmbedColor,
-			Description: desc.String(),
+			Description: strings.TrimSpace(desc.String()),
+			Fields:      fields,
 		}},
 	})
 }

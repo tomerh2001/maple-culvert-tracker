@@ -28,9 +28,9 @@ func TestBuildWeekPBEmbedEmpty(t *testing.T) {
 	}
 }
 
-// The channel summary is an embed: coverage line, the top three with medals,
-// guild total, the shared color and footer, and a " (this week)" title suffix
-// for the live week only.
+// The channel summary is an embed: coverage line + guild total in the
+// description, the top three as a 3-column inline-field podium grid, the shared
+// color and footer, and a " (this week)" title suffix for the live week only.
 func TestBuildWeeklySummaryEmbed(t *testing.T) {
 	rows := []weekScore{
 		{Name: "Alpha", Score: 300, Rank: 1},
@@ -50,15 +50,25 @@ func TestBuildWeeklySummaryEmbed(t *testing.T) {
 	if e.Footer == nil || e.Footer.Text != "See /culvert-help to register your IGN to your Discord account" {
 		t.Errorf("summary footer = %+v", e.Footer)
 	}
-	for _, want := range []string{
-		"2 of 3 members submitted",
-		":first_place: `Alpha` - 300",
-		":second_place: `Beta` - 200",
-		"Guild total: **500**",
-	} {
+	for _, want := range []string{"2 of 3 members submitted", "Guild total: **500**"} {
 		if !strings.Contains(e.Description, want) {
 			t.Errorf("summary description missing %q:\n%s", want, e.Description)
 		}
+	}
+	// Top-three podium is a 3-column inline grid.
+	if len(e.Fields) != 3 {
+		t.Fatalf("expected 3 podium fields, got %d", len(e.Fields))
+	}
+	for _, f := range e.Fields {
+		if !f.Inline {
+			t.Errorf("podium field %q must be inline for a grid", f.Name)
+		}
+	}
+	if e.Fields[1].Value != "**Alpha**\n**Beta**" {
+		t.Errorf("character column = %q, want bolded Alpha/Beta", e.Fields[1].Value)
+	}
+	if e.Fields[2].Value != "300\n200" {
+		t.Errorf("score column = %q, want 300/200", e.Fields[2].Value)
 	}
 
 	// A past week -> no " (this week)" suffix.
