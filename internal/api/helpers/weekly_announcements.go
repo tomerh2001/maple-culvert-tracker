@@ -103,7 +103,7 @@ func buildWeeklyArtifacts(dbc *sql.DB, rdb *redis.Client, tenantID string, week 
 		weekStr:      weekStr,
 		rows:         rows,
 		summaryEmbed: buildWeeklySummary(week, weekStr, rosterCount, rows),
-		tableEmbed:   BuildWeekTableEmbed("Full table - week of "+weekStr, rosterCount, rows, prevByID),
+		tableEmbed:   BuildWeekTableEmbed("Top 25 - week of "+weekStr, rosterCount, rows, prevByID),
 		pbEmbed:      buildWeekPBEmbed(dbc, week, rows),
 	}, nil
 }
