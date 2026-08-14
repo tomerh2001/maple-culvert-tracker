@@ -182,6 +182,24 @@ var Commands = []*discordgo.ApplicationCommand{
 		},
 	},
 	{
+		Name:        "rename",
+		Description: "Fix a misread name: rename a character to the correct IGN (merges scores if it exists)",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Required:    true,
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "name",
+				Description: "The current (misread) character name",
+			},
+			{
+				Required:    true,
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "new-name",
+				Description: "The correct in-game name",
+			},
+		},
+	},
+	{
 		Name:        "config",
 		Description: "ADMINS: View or change bot settings",
 		Options: []*discordgo.ApplicationCommandOption{

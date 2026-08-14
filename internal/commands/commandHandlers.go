@@ -19,6 +19,7 @@ var CommandHandlers = map[string]func(s *discordgo.Session, i *discordgo.Interac
 	"registered":    registeredCommand,
 	"submit-scores": submitScoresCommand,
 	"set-culvert":   setCulvert,
+	"rename":        renameCharacter,
 	"config":        configCommand,
 	"reset-week":    resetWeekCommand,
 	// Context menu commands (right click a message or member -> Apps).
