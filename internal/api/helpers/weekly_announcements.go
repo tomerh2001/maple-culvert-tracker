@@ -274,33 +274,30 @@ func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []
 	fmt.Fprintf(b, "\nGuild total: **%s**", FormatThousands(total))
 	e.Description = b.String()
 
-	// Top-three podium as a 3-column grid, with medals in the place column as a
-	// distinct celebratory touch. Emoji lines render taller than text, but with
-	// only three rows the drift is negligible - and the medals make the channel
-	// summary pop next to the plain-number thread table.
+	// Top-three podium as a 2-column grid, with the medal/place beside the name
+	// (one "place + character" column, one score column) as a distinct
+	// celebratory touch that makes the channel summary pop next to the thread
+	// table.
 	medals := []string{":first_place:", ":second_place:", ":third_place:"}
 	top := rows
 	if len(top) > 3 {
 		top = top[:3]
 	}
-	var rankCol, nameCol, scoreCol strings.Builder
+	var nameCol, scoreCol strings.Builder
 	for idx, r := range top {
 		if idx > 0 {
-			rankCol.WriteByte('\n')
 			nameCol.WriteByte('\n')
 			scoreCol.WriteByte('\n')
 		}
+		place := fmt.Sprintf("%d", r.Rank)
 		if idx < len(medals) {
-			rankCol.WriteString(medals[idx])
-		} else {
-			fmt.Fprintf(&rankCol, "%d", r.Rank)
+			place = medals[idx]
 		}
-		fmt.Fprintf(&nameCol, "**%s**", r.Name)
+		fmt.Fprintf(&nameCol, "%s **%s**", place, r.Name)
 		scoreCol.WriteString(FormatThousands(r.Score))
 	}
 	e.Fields = []*discordgo.MessageEmbedField{
-		{Name: "#", Value: rankCol.String(), Inline: true},
-		{Name: "Character", Value: nameCol.String(), Inline: true},
+		{Name: "#  Character", Value: nameCol.String(), Inline: true},
 		{Name: "Score", Value: scoreCol.String(), Inline: true},
 	}
 	return e
@@ -320,12 +317,13 @@ const WeekEmbedColor = weekEmbedColor
 const weekTableRowCap = 25
 
 // BuildWeekTableEmbed renders the week's ranked board as a Discord-native grid:
-// three side-by-side inline fields (rank / character / score) so the columns
-// line up instead of reading as one run of text. Medals mark the top three;
-// rank movement vs the previous week rides on the name so the score column
-// stays a clean number column; scores get thousands separators. Only the top 25
-// rows are rendered (rows arrive score-desc); the footer's coverage still counts
-// every submitter. Shared by the weekly thread table and /culvert-all.
+// two side-by-side inline fields - "rank + character" and score - so the
+// columns line up instead of reading as one run of text, with the rank beside
+// the name for more room. The top three are bolded; rank movement vs the
+// previous week rides on the name so the score column stays a clean number
+// column; scores get thousands separators. Only the top 25 rows are rendered
+// (rows arrive score-desc); the footer's coverage still counts every submitter.
+// Shared by the weekly thread table and /culvert-all.
 func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevByID map[int64]weekScore) *discordgo.MessageEmbed {
 	e := &discordgo.MessageEmbed{
 		Title:     title,
@@ -351,15 +349,13 @@ func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevBy
 	}
 	e.Footer = &discordgo.MessageEmbedFooter{Text: coverage}
 
-	var rankCol, nameCol, scoreCol strings.Builder
+	var nameCol, scoreCol strings.Builder
 	for idx, r := range shown {
 		if idx > 0 {
-			rankCol.WriteByte('\n')
 			nameCol.WriteByte('\n')
 			scoreCol.WriteByte('\n')
 		}
-		fmt.Fprintf(&rankCol, "%d", r.Rank)
-		// Keep every cell pure text (no emoji) so the three columns stay
+		// Keep every cell pure text (no emoji) so the two columns stay
 		// row-aligned - emoji lines render taller and would skew the grid.
 		// Medals live in the channel summary; here the top three are bolded.
 		name := r.Name
@@ -376,13 +372,12 @@ func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevBy
 				name += fmt.Sprintf(" (-%d)", r.Rank-p.Rank)
 			}
 		}
-		nameCol.WriteString(name)
+		fmt.Fprintf(&nameCol, "%d %s", r.Rank, name)
 		scoreCol.WriteString(FormatThousands(r.Score))
 	}
 
 	e.Fields = []*discordgo.MessageEmbedField{
-		{Name: "#", Value: rankCol.String(), Inline: true},
-		{Name: "Character", Value: nameCol.String(), Inline: true},
+		{Name: "#  Character", Value: nameCol.String(), Inline: true},
 		{Name: "Score", Value: scoreCol.String(), Inline: true},
 	}
 	return e

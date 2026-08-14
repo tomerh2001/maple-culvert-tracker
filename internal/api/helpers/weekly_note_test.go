@@ -55,20 +55,21 @@ func TestBuildWeeklySummaryEmbed(t *testing.T) {
 			t.Errorf("summary description missing %q:\n%s", want, e.Description)
 		}
 	}
-	// Top-three podium is a 3-column inline grid.
-	if len(e.Fields) != 3 {
-		t.Fatalf("expected 3 podium fields, got %d", len(e.Fields))
+	// Top-three podium is a 2-column inline grid: medal/place + bolded name in
+	// the first column, score in the second.
+	if len(e.Fields) != 2 {
+		t.Fatalf("expected 2 podium fields, got %d", len(e.Fields))
 	}
 	for _, f := range e.Fields {
 		if !f.Inline {
 			t.Errorf("podium field %q must be inline for a grid", f.Name)
 		}
 	}
-	if e.Fields[1].Value != "**Alpha**\n**Beta**" {
-		t.Errorf("character column = %q, want bolded Alpha/Beta", e.Fields[1].Value)
+	if want := ":first_place: **Alpha**\n:second_place: **Beta**"; e.Fields[0].Value != want {
+		t.Errorf("place+character column = %q, want %q", e.Fields[0].Value, want)
 	}
-	if e.Fields[2].Value != "300\n200" {
-		t.Errorf("score column = %q, want 300/200", e.Fields[2].Value)
+	if e.Fields[1].Value != "300\n200" {
+		t.Errorf("score column = %q, want 300/200", e.Fields[1].Value)
 	}
 
 	// A past week -> no " (this week)" suffix.
@@ -84,9 +85,9 @@ func TestBuildWeeklySummaryEmbed(t *testing.T) {
 	}
 }
 
-// BuildWeekTableEmbed renders the board as a 3-column inline-field grid (rank /
-// character / score), capping at the top 25 rows while the footer's coverage
-// still counts EVERY submitter and flags the cap.
+// BuildWeekTableEmbed renders the board as a 2-column inline-field grid
+// ("rank + character" and score), capping at the top 25 rows while the footer's
+// coverage still counts EVERY submitter and flags the cap.
 func TestBuildWeekTableEmbedTop25Cap(t *testing.T) {
 	rows := make([]weekScore, 0, 30)
 	for rank := 1; rank <= 30; rank++ {
@@ -104,9 +105,9 @@ func TestBuildWeekTableEmbedTop25Cap(t *testing.T) {
 	if e.Footer == nil || e.Footer.Text != "30 of 30 members submitted • top 25 shown" {
 		t.Errorf("coverage footer = %+v", e.Footer)
 	}
-	// Three side-by-side inline columns.
-	if len(e.Fields) != 3 {
-		t.Fatalf("expected 3 inline fields, got %d", len(e.Fields))
+	// Two side-by-side inline columns: "rank + character" and score.
+	if len(e.Fields) != 2 {
+		t.Fatalf("expected 2 inline fields, got %d", len(e.Fields))
 	}
 	for _, f := range e.Fields {
 		if !f.Inline {
@@ -116,12 +117,12 @@ func TestBuildWeekTableEmbedTop25Cap(t *testing.T) {
 			t.Errorf("field %q rendered %d rows, want 25 (cap)", f.Name, got)
 		}
 	}
-	// Rank 25 rendered in the name column, rank 26 capped out.
-	nameCol := e.Fields[1].Value
-	if !strings.Contains(nameCol, namePad(25)) {
-		t.Errorf("rank 25 (%s) should be rendered", namePad(25))
+	// Rank + name live in the first column; rank 25 rendered, rank 26 capped.
+	col := e.Fields[0].Value
+	if !strings.Contains(col, "25 "+namePad(25)) {
+		t.Errorf("rank 25 row (25 %s) should be rendered:\n%s", namePad(25), col)
 	}
-	if strings.Contains(nameCol, namePad(26)) {
+	if strings.Contains(col, namePad(26)) {
 		t.Errorf("rank 26 (%s) should be capped out", namePad(26))
 	}
 
