@@ -46,30 +46,26 @@ func TestBuildWeeklySummaryEmbed(t *testing.T) {
 	if e.Color != weekEmbedColor {
 		t.Errorf("summary color = %d, want %d", e.Color, weekEmbedColor)
 	}
-	if e.Footer == nil || e.Footer.Text != "See /culvert-help for more information" {
+	// Coverage + help both live in the footer (no blank spacer line above them).
+	if e.Footer == nil || !strings.Contains(e.Footer.Text, "2 of 3 members submitted") ||
+		!strings.Contains(e.Footer.Text, "See /culvert-help for more information") {
 		t.Errorf("summary footer = %+v", e.Footer)
 	}
 	if !strings.Contains(e.Description, "Guild total: **500**") {
 		t.Errorf("summary description = %q, want guild total", e.Description)
 	}
-	// Podium grid (2 inline columns) + a trailing full-width coverage field.
-	if len(e.Fields) != 3 {
-		t.Fatalf("expected 3 fields (podium + coverage), got %d", len(e.Fields))
+	// Just the 2-column podium grid (coverage is in the footer, not a field).
+	if len(e.Fields) != 2 {
+		t.Fatalf("expected 2 podium fields, got %d", len(e.Fields))
 	}
 	if !e.Fields[0].Inline || !e.Fields[1].Inline {
 		t.Errorf("podium columns must be inline")
-	}
-	if e.Fields[2].Inline {
-		t.Errorf("coverage field must be full-width (not inline)")
 	}
 	if want := ":first_place: `Alpha`\n:second_place: `Beta`"; e.Fields[0].Value != want {
 		t.Errorf("place+character column = %q, want %q", e.Fields[0].Value, want)
 	}
 	if e.Fields[1].Value != "300\n200" {
 		t.Errorf("score column = %q, want 300/200", e.Fields[1].Value)
-	}
-	if !strings.Contains(e.Fields[2].Value, "2 of 3 members submitted") {
-		t.Errorf("coverage field = %q", e.Fields[2].Value)
 	}
 
 	// A past week -> title is still just "Week of <date>".
@@ -79,16 +75,10 @@ func TestBuildWeeklySummaryEmbed(t *testing.T) {
 		t.Errorf("past-week title = %q", p.Title)
 	}
 
-	// An empty week still renders coverage (in the trailing field), not a crash.
-	em := buildWeeklySummary(past, pastStr, 5, nil)
-	foundCoverage := false
-	for _, f := range em.Fields {
-		if strings.Contains(f.Value, "0 of 5 members submitted") {
-			foundCoverage = true
-		}
-	}
-	if !foundCoverage {
-		t.Errorf("empty-week coverage missing: fields=%+v desc=%q", em.Fields, em.Description)
+	// An empty week still renders coverage (in the footer), not a crash.
+	if em := buildWeeklySummary(past, pastStr, 5, nil); em.Footer == nil ||
+		!strings.Contains(em.Footer.Text, "0 of 5 members submitted") {
+		t.Errorf("empty-week coverage missing from footer: %+v", em.Footer)
 	}
 }
 

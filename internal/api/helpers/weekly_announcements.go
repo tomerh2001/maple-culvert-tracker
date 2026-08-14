@@ -245,23 +245,23 @@ func FormatThousands(n int) string {
 
 // buildWeeklySummary renders the channel message as an embed: a compact,
 // always-current overview. Title is just "Week of <date>"; the guild total sits
-// under it, then the top-three podium grid (medals + backticked name / score),
-// then a trailing full-width field with coverage + "updated <relative>". The
-// full table lives in the thread (see BuildWeekTableEmbed).
+// under it, then the top-three podium grid (medals + backticked name / score);
+// coverage + the help line live in the footer (tight under the grid, no blank
+// spacer), with the footer timestamp showing when it was last updated. The full
+// table lives in the thread (see BuildWeekTableEmbed).
 func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []weekScore) *discordgo.MessageEmbed {
+	// Coverage + help live in the footer (which sits tight under the grid, no
+	// blank spacer line); the footer timestamp shows when it was last updated.
 	e := &discordgo.MessageEmbed{
-		Title: "Week of " + weekStr,
-		Color: weekEmbedColor,
+		Title:     "Week of " + weekStr,
+		Color:     weekEmbedColor,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "See /culvert-help for more information",
+			Text: fmt.Sprintf("%d of %d members submitted\nSee /culvert-help for more information", len(rows), rosterCount),
 		},
 	}
-	coverage := fmt.Sprintf("%d of %d members submitted • updated <t:%d:R>", len(rows), rosterCount, time.Now().Unix())
-	coverageField := &discordgo.MessageEmbedField{Name: "​", Value: coverage, Inline: false}
-
 	if len(rows) == 0 {
 		e.Description = "No scores recorded yet this week."
-		e.Fields = []*discordgo.MessageEmbedField{coverageField}
 		return e
 	}
 	total := 0
@@ -293,7 +293,6 @@ func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []
 	e.Fields = []*discordgo.MessageEmbedField{
 		{Name: "#  Character", Value: nameCol.String(), Inline: true},
 		{Name: "Score", Value: scoreCol.String(), Inline: true},
-		coverageField,
 	}
 	return e
 }
@@ -343,13 +342,13 @@ func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevBy
 			place = medals[idx]
 		}
 		line := place + " `" + r.Name + "`"
-		// Rank movement vs last week, shown with up/down arrow emoji.
+		// Rank movement vs last week, shown as an up/down arrow + delta in parens.
 		if p, ok := prevByID[r.CharacterID]; ok {
 			switch {
 			case p.Rank > r.Rank:
-				line += fmt.Sprintf(" :arrow_up: %d", p.Rank-r.Rank)
+				line += fmt.Sprintf(" (:arrow_up: %d)", p.Rank-r.Rank)
 			case p.Rank < r.Rank:
-				line += fmt.Sprintf(" :arrow_down: %d", r.Rank-p.Rank)
+				line += fmt.Sprintf(" (:arrow_down: %d)", r.Rank-p.Rank)
 			}
 		}
 		// Embed field values cap at 1024 chars; stop before overflowing rather

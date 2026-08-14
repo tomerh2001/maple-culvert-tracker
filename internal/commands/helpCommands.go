@@ -22,21 +22,20 @@ func culvertResetLine() string {
 
 const helpText = `## Culvert Tracker - how to use it
 
-**1. Link your character(s) (once)**
-Type ` + "`/register`" + ` and enter your in-game character name. That connects your MapleStory character to your Discord account. Run ` + "`/register`" + ` once per IGN, you can do it multiple times for each mule.
+**1) Link your character(s) (once)**
+Just run ` + "`/register`" + ` - it reads your Discord server nickname and links all your IGNs to your account.
 - ` + "`/unregister name:YourCharacter`" + ` - remove one by name (history is kept)
 - ` + "`/characters`" + ` - list your registered characters.
 
-**2. See your progress**
+**2) See your progress**
 - ` + "`/culvert`" + ` - your weekly culvert scores as a chart
 - Add ` + "`from:`" + `/` + "`to:`" + ` (YYYY-MM-DD or a Discord timestamp) to filter a specific time window
 
-**3. How scores get in**
+**3) How scores get in**
 Submitters submit a screenshot of the in-game ranking two ways:
-1. Right click the message -> Apps -> **Submit Scores**.
-2. Using ` + "`/submit-scores`" + `.
+- Right click the message -> Apps -> **Submit Scores**.
+- Using ` + "`/submit-scores`" + `.
 
-Single-score corrections go through ` + "`/set-culvert`" + `.
 If your score is missing, let an admin know.
 
 %%RESET%%
