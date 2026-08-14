@@ -244,40 +244,34 @@ func FormatThousands(n int) string {
 }
 
 // buildWeeklySummary renders the channel message as an embed: a compact,
-// always-current overview of the week's data (coverage, the top three, guild
-// total). The full table lives in the thread (see BuildWeekTableEmbed) so the
-// channel stays scannable. The title gains " (this week)" for the live week.
+// always-current overview. Title is just "Week of <date>"; the guild total sits
+// under it, then the top-three podium grid (medals + backticked name / score),
+// then a trailing full-width field with coverage + "updated <relative>". The
+// full table lives in the thread (see BuildWeekTableEmbed).
 func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []weekScore) *discordgo.MessageEmbed {
-	title := "Culvert - week of " + weekStr
-	if weekStr == cmdhelpers.CurrentCulvertWeek(time.Now()).Format(time.DateOnly) {
-		title += " (this week)"
-	}
 	e := &discordgo.MessageEmbed{
-		Title:     title,
-		Color:     weekEmbedColor,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Title: "Week of " + weekStr,
+		Color: weekEmbedColor,
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "See /culvert-help to register your IGN to your Discord account",
+			Text: "See /culvert-help for more information",
 		},
 	}
-	b := &strings.Builder{}
-	fmt.Fprintf(b, "%d of %d members submitted - updated <t:%d:R>", len(rows), rosterCount, time.Now().Unix())
+	coverage := fmt.Sprintf("%d of %d members submitted • updated <t:%d:R>", len(rows), rosterCount, time.Now().Unix())
+	coverageField := &discordgo.MessageEmbedField{Name: "​", Value: coverage, Inline: false}
+
 	if len(rows) == 0 {
-		b.WriteString("\nNo scores recorded yet this week.")
-		e.Description = b.String()
+		e.Description = "No scores recorded yet this week."
+		e.Fields = []*discordgo.MessageEmbedField{coverageField}
 		return e
 	}
 	total := 0
 	for _, r := range rows {
 		total += r.Score
 	}
-	fmt.Fprintf(b, "\nGuild total: **%s**", FormatThousands(total))
-	e.Description = b.String()
+	e.Description = fmt.Sprintf("Guild total: **%s**", FormatThousands(total))
 
-	// Top-three podium as a 2-column grid, with the medal/place beside the name
-	// (one "place + character" column, one score column) as a distinct
-	// celebratory touch that makes the channel summary pop next to the thread
-	// table.
+	// Top-three podium: medal/place + backticked name in one column, score in
+	// the other - a celebratory touch that makes the channel summary pop.
 	medals := []string{":first_place:", ":second_place:", ":third_place:"}
 	top := rows
 	if len(top) > 3 {
@@ -293,12 +287,13 @@ func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []
 		if idx < len(medals) {
 			place = medals[idx]
 		}
-		fmt.Fprintf(&nameCol, "%s **%s**", place, r.Name)
+		fmt.Fprintf(&nameCol, "%s `%s`", place, r.Name)
 		scoreCol.WriteString(FormatThousands(r.Score))
 	}
 	e.Fields = []*discordgo.MessageEmbedField{
 		{Name: "#  Character", Value: nameCol.String(), Inline: true},
 		{Name: "Score", Value: scoreCol.String(), Inline: true},
+		coverageField,
 	}
 	return e
 }
@@ -317,13 +312,12 @@ const WeekEmbedColor = weekEmbedColor
 const weekTableRowCap = 25
 
 // BuildWeekTableEmbed renders the week's ranked board as a Discord-native grid:
-// two side-by-side inline fields - "rank + character" and score - so the
-// columns line up instead of reading as one run of text, with the rank beside
-// the name for more room. The top three are bolded; rank movement vs the
-// previous week rides on the name so the score column stays a clean number
-// column; scores get thousands separators. Only the top 25 rows are rendered
-// (rows arrive score-desc); the footer's coverage still counts every submitter.
-// Shared by the weekly thread table and /culvert-all.
+// two side-by-side inline fields - "rank + character" and score. The place
+// column carries medals for the top three (else the rank number) beside the
+// backticked name, with an up/down arrow + delta for rank movement vs the
+// previous week; scores get thousands separators. Only the top 25 rows are
+// rendered (rows arrive score-desc); the footer's coverage still counts every
+// submitter. Shared by the weekly thread table and /culvert-all.
 func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevByID map[int64]weekScore) *discordgo.MessageEmbed {
 	e := &discordgo.MessageEmbed{
 		Title:     title,
@@ -336,45 +330,48 @@ func BuildWeekTableEmbed(title string, rosterCount int, rows []weekScore, prevBy
 	}
 
 	shown := rows
-	overflow := 0
 	if len(shown) > weekTableRowCap {
-		overflow = len(shown) - weekTableRowCap
 		shown = shown[:weekTableRowCap]
 	}
 
-	// Coverage counts ALL submitters; only the rendered rows are capped.
-	coverage := fmt.Sprintf("%d of %d members submitted", len(rows), rosterCount)
-	if overflow > 0 {
-		coverage += fmt.Sprintf(" • top %d shown", weekTableRowCap)
-	}
-	e.Footer = &discordgo.MessageEmbedFooter{Text: coverage}
-
+	medals := []string{":first_place:", ":second_place:", ":third_place:"}
 	var nameCol, scoreCol strings.Builder
+	rendered := 0
 	for idx, r := range shown {
-		if idx > 0 {
-			nameCol.WriteByte('\n')
-			scoreCol.WriteByte('\n')
+		place := fmt.Sprintf("%d", r.Rank)
+		if idx < len(medals) {
+			place = medals[idx]
 		}
-		// Keep every cell pure text (no emoji) so the two columns stay
-		// row-aligned - emoji lines render taller and would skew the grid.
-		// Medals live in the channel summary; here the top three are bolded.
-		name := r.Name
-		if idx < 3 {
-			name = "**" + name + "**"
-		}
-		// Rank movement rides on the name as plain text, keeping the score
-		// column a clean number column.
+		line := place + " `" + r.Name + "`"
+		// Rank movement vs last week, shown with up/down arrow emoji.
 		if p, ok := prevByID[r.CharacterID]; ok {
 			switch {
 			case p.Rank > r.Rank:
-				name += fmt.Sprintf(" (+%d)", p.Rank-r.Rank)
+				line += fmt.Sprintf(" :arrow_up: %d", p.Rank-r.Rank)
 			case p.Rank < r.Rank:
-				name += fmt.Sprintf(" (-%d)", r.Rank-p.Rank)
+				line += fmt.Sprintf(" :arrow_down: %d", r.Rank-p.Rank)
 			}
 		}
-		fmt.Fprintf(&nameCol, "%d %s", r.Rank, name)
+		// Embed field values cap at 1024 chars; stop before overflowing rather
+		// than have Discord reject the whole embed.
+		if nameCol.Len()+len(line)+1 > 1024 {
+			break
+		}
+		if rendered > 0 {
+			nameCol.WriteByte('\n')
+			scoreCol.WriteByte('\n')
+		}
+		nameCol.WriteString(line)
 		scoreCol.WriteString(FormatThousands(r.Score))
+		rendered++
 	}
+
+	// Coverage counts ALL submitters; the footer notes when not everyone fit.
+	coverage := fmt.Sprintf("%d of %d members submitted", len(rows), rosterCount)
+	if rendered < len(rows) {
+		coverage += fmt.Sprintf(" • top %d shown", rendered)
+	}
+	e.Footer = &discordgo.MessageEmbedFooter{Text: coverage}
 
 	e.Fields = []*discordgo.MessageEmbedField{
 		{Name: "#  Character", Value: nameCol.String(), Inline: true},

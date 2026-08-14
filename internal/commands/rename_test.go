@@ -3,7 +3,7 @@ package commands
 import "testing"
 
 // mergedOwner decides the surviving owner when /rename merges two rows. The
-// key rule: a tracked-but-unlinked '2' must beat an untracked '1'/'' so merged
+// key rule: a tracked-but-unlinked '2' must beat an untracked '1'/” so merged
 // scores stay VISIBLE on the weekly board (the bug this locks: merging a '2'
 // source into a '1' target used to keep '1' and hide the scores).
 func TestMergedOwner(t *testing.T) {

@@ -40,13 +40,23 @@ func collectImageURLs(msg *discordgo.Message) []string {
 }
 
 // submitScoresFromMessage is THE submission path: right click a message ->
-// Apps -> Submit Scores. If the message carries a pre-parsed .txt/.json
-// scores attachment it is submitted directly, otherwise the image attachments
-// are OCR'd and the result is submitted. Scores go to the current culvert
-// week; unknown names are always auto-tracked; nothing is ever zero-filled.
-// Existing scores are always overwritten (see finalizeSubmitScores). The
-// receipt is ephemeral.
+// Apps -> Submit Scores. Scores go to the CURRENT culvert week.
 func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	submitScoresFromMessageWeek(s, i, helpers.CurrentCulvertWeek(time.Now()))
+}
+
+// submitScoresFromMessageLastWeek is the same path but files the scores under
+// the PREVIOUS culvert week (Apps -> Submit Scores (Last Week)) - handy for
+// backfilling a screenshot posted after the week rolled over.
+func submitScoresFromMessageLastWeek(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	submitScoresFromMessageWeek(s, i, helpers.CurrentCulvertWeek(time.Now()).AddDate(0, 0, -7))
+}
+
+// submitScoresFromMessageWeek OCRs (or reads the pre-parsed .txt/.json of) the
+// selected message and submits the result to the given week. Unknown names are
+// always auto-tracked; nothing is ever zero-filled; existing scores are always
+// overwritten (see finalizeSubmitScores). The receipt is ephemeral.
+func submitScoresFromMessageWeek(s *discordgo.Session, i *discordgo.InteractionCreate, week time.Time) {
 	if !requireSubmitPermission(s, i) {
 		return
 	}
@@ -65,8 +75,6 @@ func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreat
 		r.Edit("Failed to fetch the selected message.")
 		return
 	}
-
-	week := helpers.CurrentCulvertWeek(time.Now())
 
 	scores := map[string]int{}
 	parseWarnings, ok := scoresFromMessage(s, r, tenant, msg, scores)

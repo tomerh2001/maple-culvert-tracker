@@ -6,7 +6,7 @@ import (
 
 var setCulvertScoreMin = float64(0)
 
-// Commands is the ENTIRE deliberately-small surface: 13 slash commands and 2
+// Commands is the ENTIRE deliberately-small surface: 14 slash commands and 3
 // context menus, registered GLOBALLY (any server may install the bot; each
 // server's data is tenant-isolated). Scores are submitted from screenshots
 // either by right clicking a message (Apps -> Submit Scores) or by attaching
@@ -233,6 +233,10 @@ var Commands = []*discordgo.ApplicationCommand{
 	// ── Context menus (right click -> Apps) ─────────────────────────────────
 	{
 		Name: "Submit Scores",
+		Type: discordgo.MessageApplicationCommand,
+	},
+	{
+		Name: "Submit Scores (Last Week)",
 		Type: discordgo.MessageApplicationCommand,
 	},
 	{

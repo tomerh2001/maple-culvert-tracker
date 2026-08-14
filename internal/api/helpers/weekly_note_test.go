@@ -28,60 +28,67 @@ func TestBuildWeekPBEmbedEmpty(t *testing.T) {
 	}
 }
 
-// The channel summary is an embed: coverage line + guild total in the
-// description, the top three as a 3-column inline-field podium grid, the shared
-// color and footer, and a " (this week)" title suffix for the live week only.
+// The channel summary is an embed: title "Week of <date>", guild total in the
+// description, the top three as a 2-column podium grid (medal/place + backticked
+// name / score), and a trailing full-width coverage field.
 func TestBuildWeeklySummaryEmbed(t *testing.T) {
 	rows := []weekScore{
 		{Name: "Alpha", Score: 300, Rank: 1},
 		{Name: "Beta", Score: 200, Rank: 2},
 	}
 
-	// Current week -> title gains " (this week)".
 	curWeek := cmdhelpers.CurrentCulvertWeek(time.Now())
 	curStr := curWeek.Format(time.DateOnly)
 	e := buildWeeklySummary(curWeek, curStr, 3, rows)
-	if want := "Culvert - week of " + curStr + " (this week)"; e.Title != want {
-		t.Errorf("current-week title = %q, want %q", e.Title, want)
+	if want := "Week of " + curStr; e.Title != want {
+		t.Errorf("title = %q, want %q", e.Title, want)
 	}
 	if e.Color != weekEmbedColor {
 		t.Errorf("summary color = %d, want %d", e.Color, weekEmbedColor)
 	}
-	if e.Footer == nil || e.Footer.Text != "See /culvert-help to register your IGN to your Discord account" {
+	if e.Footer == nil || e.Footer.Text != "See /culvert-help for more information" {
 		t.Errorf("summary footer = %+v", e.Footer)
 	}
-	for _, want := range []string{"2 of 3 members submitted", "Guild total: **500**"} {
-		if !strings.Contains(e.Description, want) {
-			t.Errorf("summary description missing %q:\n%s", want, e.Description)
-		}
+	if !strings.Contains(e.Description, "Guild total: **500**") {
+		t.Errorf("summary description = %q, want guild total", e.Description)
 	}
-	// Top-three podium is a 2-column inline grid: medal/place + bolded name in
-	// the first column, score in the second.
-	if len(e.Fields) != 2 {
-		t.Fatalf("expected 2 podium fields, got %d", len(e.Fields))
+	// Podium grid (2 inline columns) + a trailing full-width coverage field.
+	if len(e.Fields) != 3 {
+		t.Fatalf("expected 3 fields (podium + coverage), got %d", len(e.Fields))
 	}
-	for _, f := range e.Fields {
-		if !f.Inline {
-			t.Errorf("podium field %q must be inline for a grid", f.Name)
-		}
+	if !e.Fields[0].Inline || !e.Fields[1].Inline {
+		t.Errorf("podium columns must be inline")
 	}
-	if want := ":first_place: **Alpha**\n:second_place: **Beta**"; e.Fields[0].Value != want {
+	if e.Fields[2].Inline {
+		t.Errorf("coverage field must be full-width (not inline)")
+	}
+	if want := ":first_place: `Alpha`\n:second_place: `Beta`"; e.Fields[0].Value != want {
 		t.Errorf("place+character column = %q, want %q", e.Fields[0].Value, want)
 	}
 	if e.Fields[1].Value != "300\n200" {
 		t.Errorf("score column = %q, want 300/200", e.Fields[1].Value)
 	}
-
-	// A past week -> no " (this week)" suffix.
-	pastStr := "2020-01-01"
-	past := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	if p := buildWeeklySummary(past, pastStr, 3, rows); strings.Contains(p.Title, "(this week)") {
-		t.Errorf("past-week title must not say (this week): %q", p.Title)
+	if !strings.Contains(e.Fields[2].Value, "2 of 3 members submitted") {
+		t.Errorf("coverage field = %q", e.Fields[2].Value)
 	}
 
-	// An empty week still renders coverage, not a crash.
-	if em := buildWeeklySummary(past, pastStr, 5, nil); !strings.Contains(em.Description, "0 of 5 members submitted") {
-		t.Errorf("empty-week summary description = %q", em.Description)
+	// A past week -> title is still just "Week of <date>".
+	pastStr := "2020-01-01"
+	past := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if p := buildWeeklySummary(past, pastStr, 3, rows); p.Title != "Week of "+pastStr {
+		t.Errorf("past-week title = %q", p.Title)
+	}
+
+	// An empty week still renders coverage (in the trailing field), not a crash.
+	em := buildWeeklySummary(past, pastStr, 5, nil)
+	foundCoverage := false
+	for _, f := range em.Fields {
+		if strings.Contains(f.Value, "0 of 5 members submitted") {
+			foundCoverage = true
+		}
+	}
+	if !foundCoverage {
+		t.Errorf("empty-week coverage missing: fields=%+v desc=%q", em.Fields, em.Description)
 	}
 }
 
@@ -117,10 +124,11 @@ func TestBuildWeekTableEmbedTop25Cap(t *testing.T) {
 			t.Errorf("field %q rendered %d rows, want 25 (cap)", f.Name, got)
 		}
 	}
-	// Rank + name live in the first column; rank 25 rendered, rank 26 capped.
+	// Rank + backticked name live in the first column; rank 25 rendered (with
+	// its number and backticks), rank 26 capped.
 	col := e.Fields[0].Value
-	if !strings.Contains(col, "25 "+namePad(25)) {
-		t.Errorf("rank 25 row (25 %s) should be rendered:\n%s", namePad(25), col)
+	if !strings.Contains(col, "25 `"+namePad(25)+"`") {
+		t.Errorf("rank 25 row (25 `%s`) should be rendered:\n%s", namePad(25), col)
 	}
 	if strings.Contains(col, namePad(26)) {
 		t.Errorf("rank 26 (%s) should be capped out", namePad(26))
