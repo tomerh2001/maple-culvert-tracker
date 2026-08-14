@@ -11,7 +11,10 @@ type ChartMakeMultiplePoints = struct {
 	DataPlots []DataPlot `json:"dataPlots"`
 }
 
+// DataPlot is one named line in a multi-series chart. Scores align to
+// ChartMakeMultiplePoints.Labels index-for-index; a nil entry serializes to
+// JSON null and is drawn as a gap (chartmaker spans across it).
 type DataPlot struct {
 	CharacterName string `json:"characterName"`
-	Scores        []int  `json:"scores"`
+	Scores        []*int `json:"scores"`
 }

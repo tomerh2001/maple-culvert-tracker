@@ -24,6 +24,13 @@ import (
 // the window open (the most recent weeks win).
 const maxCulvertChartWeeks = 104
 
+// culvertCharRef is a member's registered character (id + display name), used
+// to fan out per-character score queries for the multi-character chart.
+type culvertCharRef struct {
+	id   int64
+	name string
+}
+
 // userMentionRe matches a Discord user mention: <@123> or <@!123>.
 var userMentionRe = regexp.MustCompile(`^<@!?(\d+)>$`)
 
@@ -115,7 +122,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	count := 0
-	names := []string{}
+	refs := []culvertCharRef{}
 	characters := map[string]struct {
 		name string
 		id   int64
@@ -127,7 +134,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		var id int64
 		rows.Scan(&id, &c)
 		count++
-		names = append(names, c)
+		refs = append(refs, culvertCharRef{id: id, name: c})
 		characters[strings.ToLower(c)] = struct {
 			name string
 			id   int64
@@ -157,14 +164,10 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			return
 		}
 		if count > 1 {
-			// Several registered characters: list the choices inline (text
-			// only) and let the caller pick one by name.
-			who := "You have"
-			if !isSelf {
-				who = "<@" + targetUserID + "> has"
-			}
-			r.EditChunked(who + " multiple characters - pick one with `/culvert name:<character>`:\n`" +
-				strings.Join(names, "`, `") + "`")
+			// Several registered characters: chart all of them at once, one
+			// line per character, over the same date window. (`/culvert
+			// name:<character>` still isolates a single character.)
+			renderMultiCulvertChart(r, tenant, targetUserID, refs, fromKey, toKey)
 			return
 		}
 		// Exactly one: matchedID/matchedName already hold it.
@@ -227,4 +230,79 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 	defer resp.Body.Close()
 	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, tenant, matchedName, toKey, statistics))
+}
+
+// renderMultiCulvertChart charts every one of a member's registered characters
+// as a separate line on one chart (via the chartmaker multi-series endpoint),
+// respecting the same from/to window. It replaces the old "pick one" list for
+// members with two or more characters. fromKey/toKey are normalized week keys
+// (possibly empty); toKey doubles as the embed's date label.
+func renderMultiCulvertChart(r *reply, tenant, targetUserID string, refs []culvertCharRef, fromKey, toKey string) {
+	// Build the per-character score window once ($1 is the character id;
+	// bounds, if any, are $2/$3).
+	where := ""
+	bounds := []any{}
+	if fromKey != "" {
+		bounds = append(bounds, fromKey)
+		where += " AND character_culvert_scores.culvert_date >= $" + strconv.Itoa(len(bounds)+1)
+	}
+	if toKey != "" {
+		bounds = append(bounds, toKey)
+		where += " AND character_culvert_scores.culvert_date <= $" + strconv.Itoa(len(bounds)+1)
+	}
+	sql := `SELECT character_culvert_scores.culvert_date, character_culvert_scores.score FROM characters INNER JOIN character_culvert_scores ON character_culvert_scores.character_id = characters.id WHERE characters.id = $1` + where + ` ORDER BY character_culvert_scores.culvert_date DESC LIMIT ` + strconv.Itoa(maxCulvertChartWeeks)
+	stmt, err := db.DB.Prepare(sql)
+	if err != nil {
+		log.Println("culvert: prepare multi scores query:", err)
+		r.Edit("Something went wrong querying the database.")
+		return
+	}
+	defer stmt.Close()
+
+	series := make([]culvertCharSeries, 0, len(refs))
+	for _, ref := range refs {
+		args := append([]any{ref.id}, bounds...)
+		rows, err := stmt.Query(args...)
+		if err != nil {
+			log.Println("culvert: multi scores query:", err)
+			r.Edit("Something went wrong querying the database.")
+			return
+		}
+		pts := []data.ChartMakerPoints{}
+		for rows.Next() {
+			pt := data.ChartMakerPoints{}
+			rows.Scan(&pt.Label, &pt.Score)
+			pt.RawDate = pt.Label[:10]
+			pt.Label = pt.Label[5:10]
+			pts = append(pts, pt)
+		}
+		rows.Close()
+		series = append(series, culvertCharSeries{name: ref.name, points: pts})
+	}
+
+	payload, more, ok := buildCulvertSeries(series, maxCulvertChartSeries)
+	if !ok {
+		r.Edit("No culvert data for <@" + targetUserID + ">'s characters in that period...")
+		return
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Println("culvert: multi chart data marshal failed:", err)
+		r.Edit("Something went wrong building the chart data.")
+		return
+	}
+
+	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker-multiple", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		r.Edit("Looks like my `chartmaker` component is broken... ")
+		return
+	}
+	defer resp.Body.Close()
+
+	names := make([]string, len(payload.DataPlots))
+	for i, p := range payload.DataPlots {
+		names[i] = p.CharacterName
+	}
+	r.EditData(helpers.GenerateDiscordCulvertMultiOutput(resp.Body, toKey, names, more))
 }
