@@ -17,13 +17,15 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 
 ## Commands
 
-The entire surface — 11 slash commands, 2 context menus:
+The entire surface — 13 slash commands, 2 context menus:
 
 | Command | Who | What |
 |---|---|---|
 | `/culvert-help` | everyone | User guide |
 | `/register` | everyone | Link a character by `name:` (submitters can link for others with `user:@x`) |
 | `/unregister` | everyone | Untrack a character by `name:`, or all of a member's characters (history kept) |
+| `/characters` | everyone | List the characters a member has linked (`user:@x`, default you) |
+| `/registered` | everyone | List every member who has linked a character |
 | `/culvert` | everyone | Progression chart: `name:` is a character or a `@mention` (default you); optional `from:`/`to:` dates |
 | `/culvert-all` | everyone | Weekly score-descending table (optional `date:`) |
 | `/submit-scores` | submitters | Submit weekly scores from screenshot(s) attached to the command (up to 5) |
@@ -75,7 +77,7 @@ Go 1.25+; `go test ./...` runs the OCR suite against real fixture screenshots in
 - OCR accepts full Guild-window screenshots (header-anchored table detection) instead of pre-cropped images only.
 - Weekly announcement message + thread instead of per-submission channel messages; no reminder/monthly-report crons; no sandbagger imagery.
 - Publicly installable with strict per-server data isolation (upstream is single-guild). Global command registration; per-tenant redis and postgres scoping.
-- The command surface is deliberately tiny (11 slash commands + 2 context menus). Upstream's duel/sandbagger/rat novelty commands, the bulk roster commands, and csv export were removed — `/submit-scores`, right click → **Submit Scores**, and `/set-culvert` cover submission entirely.
+- The command surface is deliberately tiny (13 slash commands + 2 context menus). Upstream's duel/sandbagger/rat novelty commands, the bulk roster commands, and csv export were removed — `/submit-scores`, right click → **Submit Scores**, and `/set-culvert` cover submission entirely.
 - Command replies are text-only and ephemeral by default. Exactly two replies attach an image: the `/culvert` chart, and the **Submit Scores** OCR failure help, which explains the screenshot requirements and attaches an example screenshot.
 - Week keys stay Wednesday dates, but the current week is computed from the true reset instant (Thursday 00:00 UTC).
 

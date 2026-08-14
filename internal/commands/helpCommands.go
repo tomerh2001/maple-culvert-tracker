@@ -11,10 +11,13 @@ import (
 
 const helpText = `## Culvert Tracker - how to use it
 
-**1. Link your character (once)**
+**1. Link your character(s) (once)**
 Type ` + "`/register`" + ` and enter your in-game character name.
 That connects your MapleStory character to your Discord account.
-(` + "`/unregister`" + ` undoes it - history is kept.)
+Got mules? Run ` + "`/register`" + ` once per character - link as many as you like.
+- ` + "`/characters`" + ` - list a member's linked characters (yours by default)
+- ` + "`/registered`" + ` - list everyone who has linked a character
+- ` + "`/unregister name:YourCharacter`" + ` - remove one by name (history is kept)
 
 **2. See your progress**
 - ` + "`/culvert`" + ` - your weekly culvert scores as a chart
