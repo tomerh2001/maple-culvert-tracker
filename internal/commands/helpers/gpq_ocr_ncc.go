@@ -939,6 +939,29 @@ func nccExplained(p *nccPlane, g *grayGlyph, x, y, thrMid, thrCore int) (int, in
 	return coreExpl, faintExpl
 }
 
+// maxCoreRun returns the longest vertical run of core ink (luminance >= thr)
+// in any column of [x0, x1) over rows [y0, y1). It measures glyph height at a
+// column directly: a full-height digit stem produces a long run, a baseline
+// comma a short one, so the comma guard in nccCandidatesAt can reject a comma
+// sitting on a stem it could not have produced.
+func maxCoreRun(p *nccPlane, x0, x1, y0, y1, thr int) int {
+	best := 0
+	for x := x0; x < x1; x++ {
+		cur := 0
+		for y := y0; y < y1; y++ {
+			if int(p.lum[y*p.w+x]) >= thr {
+				cur++
+				if cur > best {
+					best = cur
+				}
+			} else {
+				cur = 0
+			}
+		}
+	}
+	return best
+}
+
 // nccCand is one acceptable glyph candidate at a column. cost is the DP cost
 // of taking it (before the per-glyph insertion penalty): the correlation
 // shortfall scaled to ink pixels, plus the window's core ink the template
@@ -997,6 +1020,22 @@ func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre
 	scan := func(gi int) {
 		g := &f.glyphs[gi]
 		if x+g.coreW > p.w || g.coreH > bandH {
+			return
+		}
+		// A comma is a short baseline mark; it must never be placed over a
+		// full-height digit stem. The narrow "1" carries almost all its ink in
+		// that stem, so a comma template - whose tiny ink keeps its
+		// (1-ncc)*ink cost near zero - can match the stem's dense base more
+		// cheaply than the tall "1" itself and steal the digit, the thin upper
+		// flag then skipping under the dropped-digit guard (Cholom 61,516 ->
+		// 6156, Stoic 44,710 -> 4470, and Klout 107,193 dropped whole when the
+		// skip tripped the guard). A genuine thousands comma sits in the
+		// inter-group gap where the tallest core-ink run is its own body
+		// (~coreH), so requiring the comma's advance columns to hold no run
+		// taller than 1.5x its height rejects the geometric impossibility
+		// without touching any real separator (measured: real commas run 5-6
+		// px, every digit stem 13-18 px at reference 2x).
+		if g.r == ',' && maxCoreRun(p, x, x+g.coreW, y0, y1, thrCore) > g.coreH+g.coreH/2 {
 			return
 		}
 		// Ink-budget prefilter on the segmentation planes: the glyph's core
@@ -1146,13 +1185,23 @@ func nccDecodeSpanCov(p *nccPlane, f *grayFont, x0, x1, y0, y1 int, loosePre []i
 	looseCol := func(x int) int { return loosePre[x+1] - loosePre[x] }
 
 	// Candidate columns: onsets of core ink and of strong ink, plus the two
-	// columns to their left (the antialiased glyph edge precedes the first
-	// core column; a strong-ink onset conversely lands on the glyph's first
-	// full-intensity column, whose faint edge neighbour may already have
+	// columns on EACH side of a core onset (the antialiased glyph edge precedes
+	// the first core column; a strong-ink onset conversely lands on the glyph's
+	// first full-intensity column, whose faint edge neighbour may already have
 	// crossed the core cut), plus the span start. Halo blending can bridge
 	// the core-ink gap between adjacent glyphs (no onset), so whenever a
 	// glyph match ends at a column, the columns just after it are marked as
 	// candidates too - decoding chains through merged glyph runs.
+	//
+	// The two columns to the RIGHT of a core onset matter for a glyph whose
+	// leading ink is a thin feature offset from its body: the narrow "1"'s
+	// faint upper-left flag crosses the core cut one to two columns before its
+	// dense stem, so its onset sits left of where the template aligns best
+	// (at the onset column the "1" scores far worse than one column right of
+	// it). Without a candidate there the decoder can only start the "1" at its
+	// mis-aligned onset and skips it instead, silently dropping a digit
+	// (Cholom 61,516 / Stoic 44,710 lost their tens "1"; Klout 107,193 dropped
+	// whole when the skip tripped the guard).
 	candCol := make([]bool, n)
 	mark := func(x int) {
 		if x >= x0 && x < x1 {
@@ -1166,6 +1215,8 @@ func nccDecodeSpanCov(p *nccPlane, f *grayFont, x0, x1, y0, y1 int, loosePre []i
 			mark(x - 2)
 			mark(x - 1)
 			mark(x)
+			mark(x + 1)
+			mark(x + 2)
 		}
 		if strongCol(x) > 0 && (x == x0 || strongCol(x-1) == 0) {
 			mark(x - 2)
