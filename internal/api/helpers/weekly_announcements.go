@@ -274,8 +274,11 @@ func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []
 	fmt.Fprintf(b, "\nGuild total: **%s**", FormatThousands(total))
 	e.Description = b.String()
 
-	// Top-three podium as the same 3-column grid as the thread table (pure
-	// text so the columns stay row-aligned; top three bolded).
+	// Top-three podium as a 3-column grid, with medals in the place column as a
+	// distinct celebratory touch. Emoji lines render taller than text, but with
+	// only three rows the drift is negligible - and the medals make the channel
+	// summary pop next to the plain-number thread table.
+	medals := []string{":first_place:", ":second_place:", ":third_place:"}
 	top := rows
 	if len(top) > 3 {
 		top = top[:3]
@@ -287,7 +290,11 @@ func buildWeeklySummary(week time.Time, weekStr string, rosterCount int, rows []
 			nameCol.WriteByte('\n')
 			scoreCol.WriteByte('\n')
 		}
-		fmt.Fprintf(&rankCol, "%d", r.Rank)
+		if idx < len(medals) {
+			rankCol.WriteString(medals[idx])
+		} else {
+			fmt.Fprintf(&rankCol, "%d", r.Rank)
+		}
 		fmt.Fprintf(&nameCol, "**%s**", r.Name)
 		scoreCol.WriteString(FormatThousands(r.Score))
 	}
@@ -570,29 +577,50 @@ func buildWeekPBEmbed(dbc *sql.DB, week time.Time, rows []weekScore) *discordgo.
 		e.Description = "No new personal bests recorded this week yet."
 		return e
 	}
-	// Keep the description within Discord's 4096-char embed limit.
-	b := &strings.Builder{}
-	for idx, pb := range pbs {
-		if b.Len()+len(pb)+40 > 4096 {
-			fmt.Fprintf(b, "... and %d more", len(pbs)-idx)
+	// Grid: who improved (mention + name), and the previous -> new columns.
+	// Cap on the widest column (the mention/name) to stay under Discord's
+	// 1024-char field-value limit; overflow is summarised below the grid.
+	var whoCol, prevCol, newCol strings.Builder
+	shown := 0
+	for _, pb := range pbs {
+		if whoCol.Len()+len(pb.who)+1 > 1024 {
 			break
 		}
-		if b.Len() > 0 {
-			b.WriteByte('\n')
+		if shown > 0 {
+			whoCol.WriteByte('\n')
+			prevCol.WriteByte('\n')
+			newCol.WriteByte('\n')
 		}
-		b.WriteString(pb)
+		whoCol.WriteString(pb.who)
+		prevCol.WriteString(FormatThousands(pb.prev))
+		newCol.WriteString(FormatThousands(pb.best))
+		shown++
 	}
-	e.Description = b.String()
+	e.Fields = []*discordgo.MessageEmbedField{
+		{Name: "Character", Value: whoCol.String(), Inline: true},
+		{Name: "Previous", Value: prevCol.String(), Inline: true},
+		{Name: "New best", Value: newCol.String(), Inline: true},
+	}
+	if shown < len(pbs) {
+		e.Description = fmt.Sprintf("... and %d more", len(pbs)-shown)
+	}
 	return e
 }
 
-// weekPersonalBests returns one congratulation line per character whose
-// this-week score beats their best in EVERY prior week (all scores before this
-// week, with no patch cutoff). The character name is always in backticks; a
-// linked character is @mentioned before it ("<@id> `Name`: old -> new"), an
-// unlinked one shows just the backticked name ("`Name`: old -> new").
-func weekPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore) []string {
-	out := []string{}
+// weekPB is one personal-best row: who improved (mention + backticked name),
+// their previous best, and this week's new best.
+type weekPB struct {
+	who  string
+	prev int
+	best int
+}
+
+// weekPersonalBests returns one entry per character whose this-week score beats
+// their best in EVERY prior week (all scores before this week, no patch
+// cutoff). The name is always backticked; a linked character is @mentioned
+// before it ("<@id> `Name`"), an unlinked one shows just the backticked name.
+func weekPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore) []weekPB {
+	out := []weekPB{}
 	for _, r := range rows {
 		if r.Score <= 0 {
 			continue
@@ -608,7 +636,7 @@ func weekPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore) []string {
 		if r.DiscordUserID != "" && r.DiscordUserID != "1" && r.DiscordUserID != "2" {
 			who = "<@" + r.DiscordUserID + "> `" + r.Name + "`"
 		}
-		out = append(out, fmt.Sprintf("%s: %s -> %s", who, FormatThousands(int(best.Int64)), FormatThousands(r.Score)))
+		out = append(out, weekPB{who: who, prev: int(best.Int64), best: r.Score})
 	}
 	return out
 }

@@ -52,16 +52,16 @@ func TestWeekPersonalBestsLineFormat(t *testing.T) {
 		{CharacterID: unlinkedID, Name: "UnlinkedChar", DiscordUserID: "2", Score: 90},
 	}
 	got := weekPersonalBests(dbc, week, rows)
-	want := []string{
-		"<@" + linkedOwner + "> `LinkedChar`: 100 -> 250",
-		"`UnlinkedChar`: 80 -> 90",
+	want := []weekPB{
+		{who: "<@" + linkedOwner + "> `LinkedChar`", prev: 100, best: 250},
+		{who: "`UnlinkedChar`", prev: 80, best: 90},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("weekPersonalBests = %v, want %v", got, want)
 	}
 	for idx := range want {
 		if got[idx] != want[idx] {
-			t.Errorf("line %d = %q, want %q", idx, got[idx], want[idx])
+			t.Errorf("row %d = %+v, want %+v", idx, got[idx], want[idx])
 		}
 	}
 }
@@ -109,7 +109,7 @@ func TestWeekPersonalBestsComparesAllPriorWeeks(t *testing.T) {
 		{CharacterID: beatenID, Name: "AllPriorBeaten", DiscordUserID: "2", Score: 250},
 	}
 	got := weekPersonalBests(dbc, week, rows)
-	want := []string{"`AllPriorBeaten`: 100 -> 250"}
+	want := []weekPB{{who: "`AllPriorBeaten`", prev: 100, best: 250}}
 	if len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("weekPersonalBests = %v, want %v (pre-patch scores must count as prior)", got, want)
 	}
