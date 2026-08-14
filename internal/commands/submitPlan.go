@@ -3,7 +3,6 @@ package commands
 import (
 	"sort"
 
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
@@ -36,7 +35,8 @@ type submissionPlan struct {
 //   - a value equal to the existing score is a no-op
 //   - ANY differing value - including downgrading a score to 0 - is a conflict
 //     unless overwrite is set (conflicts are all collected, never just the
-//     first); overwrite comes only from the resubmit-to-confirm flow
+//     first); live submissions always pass overwrite=true, so conflicts are a
+//     planning-only signal retained for tests
 //   - tracked characters absent from submitted are NEVER touched (no
 //     zero-filling exists anymore)
 func planSubmission(tracked []trackedScore, submitted map[string]int, overwrite bool) submissionPlan {
@@ -71,32 +71,4 @@ func planSubmission(tracked []trackedScore, submitted map[string]int, overwrite 
 	sort.Slice(unmatched, func(a, b int) bool { return unmatched[a].Name < unmatched[b].Name })
 	p.AutoTrack = unmatched
 	return p
-}
-
-// overwriteDecision is the pure resubmit-to-confirm rule. Given whether the
-// plan has conflicts and whether a pending confirmation matching this
-// (submitter, message, week) exists:
-//   - no conflicts: apply normally, nothing pending to store
-//   - conflicts + matching pending key: apply WITH overwrite (and the caller
-//     clears the key)
-//   - conflicts + no pending key: apply nothing, store the pending key and
-//     ask the submitter to resubmit within the TTL
-func overwriteDecision(hasConflicts, pendingMatch bool) (overwrite, storePending bool) {
-	switch {
-	case !hasConflicts:
-		return false, false
-	case pendingMatch:
-		return true, false
-	default:
-		return false, true
-	}
-}
-
-func formatConflictsTable(conflicts []scoreConflict) string {
-	t := table.NewWriter()
-	t.AppendHeader(table.Row{"Character", "Existing", "Incoming"})
-	for _, c := range conflicts {
-		t.AppendRow(table.Row{c.Name, c.Existing, c.Incoming})
-	}
-	return t.Render()
 }

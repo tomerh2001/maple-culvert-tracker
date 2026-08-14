@@ -53,30 +53,11 @@ var (
 	// command registration pass: "ok" on success, otherwise the error string.
 	DATA_COMMAND_REGISTRATION_STATUS = redisInternalKey{"DATA_COMMAND_REGISTRATION_STATUS", EditableTypeNone, false}
 
-	// DATA_SUBMIT_OVERWRITE_PENDING is the name PREFIX for the
-	// resubmit-to-confirm overwrite flow: when a Submit Scores run hits
-	// conflicting existing scores, a pending-confirmation key scoped to
-	// (tenant via .For(), submitter user id, target message id, week) is
-	// stored with a short TTL; a second submission matching the key applies
-	// with overwrite. Use PendingOverwriteKey to build the scoped key - the
-	// prefix itself is never read or written.
-	DATA_SUBMIT_OVERWRITE_PENDING = redisInternalKey{"DATA_SUBMIT_OVERWRITE_PENDING", EditableTypeNone, false}
-
 	// DATA_RESET_WEEK_PENDING is the name PREFIX for the /reset-week
 	// run-again-to-confirm flow, scoped (tenant via .For(), invoker, week).
 	// Use PendingResetWeekKey.
 	DATA_RESET_WEEK_PENDING = redisInternalKey{"DATA_RESET_WEEK_PENDING", EditableTypeNone, false}
 )
-
-// PendingOverwriteKey returns the internal key holding a pending
-// overwrite confirmation for one (submitter, message, week) triple; the
-// caller binds the tenant with .For(). Dynamic: deliberately not in KeysMap.
-func PendingOverwriteKey(submitterID, messageID, week string) redisInternalKey {
-	return redisInternalKey{
-		Name:         DATA_SUBMIT_OVERWRITE_PENDING.Name + ":" + submitterID + ":" + messageID + ":" + week,
-		EditableType: EditableTypeNone,
-	}
-}
 
 // PendingResetWeekKey returns the internal key holding a pending /reset-week
 // confirmation for one (invoker, week) pair; the caller binds the tenant with

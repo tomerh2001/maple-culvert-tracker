@@ -12,7 +12,15 @@ import (
 // or <t:1723500000:R>.
 var discordTimestampRe = regexp.MustCompile(`^<t:(\d+)(?::[a-zA-Z])?>$`)
 
+// messageLinkRe matches a Discord message link
+// (https://discord.com/channels/<guild>/<channel>/<message>, also the
+// discordapp.com / canary/ptb host variants), capturing channel and message
+// ids.
+var messageLinkRe = regexp.MustCompile(`^https://(?:[a-z]+\.)?discord(?:app)?\.com/channels/\d+/(\d+)/(\d+)/?$`)
+
 var errBadDate = errors.New("bad date")
+
+var errBadMessageLink = errors.New("bad message link")
 
 // parseFlexibleDate parses a user-typed date option: plain YYYY-MM-DD or a
 // Discord timestamp mention (<t:123456> / <t:123456:R>). The result is the
@@ -37,3 +45,17 @@ func parseFlexibleDate(s string) (time.Time, error) {
 }
 
 const badDateMessage = "Invalid date - use `YYYY-MM-DD` or a Discord timestamp like `<t:1723500000>`."
+
+// parseMessageLink extracts the channel and message ids from a Discord message
+// link (right click a message -> Copy Message Link). The guild segment is
+// ignored: the bot fetches by channel + message id.
+func parseMessageLink(s string) (channelID, messageID string, err error) {
+	s = strings.TrimSpace(s)
+	m := messageLinkRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", "", errBadMessageLink
+	}
+	return m[1], m[2], nil
+}
+
+const badMessageLinkMessage = "Invalid `message-link` - right click the screenshot message and choose Copy Message Link (looks like `https://discord.com/channels/…/…/…`)."

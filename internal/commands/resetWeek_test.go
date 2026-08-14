@@ -7,7 +7,7 @@ import (
 )
 
 // resetWeekDecision is the pure run-again-to-confirm rule for /reset-week,
-// unit-tested exhaustively like overwriteDecision.
+// unit-tested exhaustively below.
 func TestResetWeekDecision(t *testing.T) {
 	cases := []struct {
 		name             string

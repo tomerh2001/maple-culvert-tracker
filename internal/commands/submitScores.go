@@ -20,15 +20,12 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
-// pendingOverwriteTTL is how long a resubmit-to-confirm window stays open.
-const pendingOverwriteTTL = 10 * time.Minute
-
 // finalizeSubmitScores runs the score submission flow once a scores map
 // (character name -> score) has been parsed: it canonicalizes unknown names
 // against the official rankings, plans the submission against the tracked
 // roster and existing week data (always overwriting existing scores),
-// auto-tracks unknown names, applies the changes and replies with a text-only
-// receipt.
+// auto-tracks unknown names, applies the changes and replies with an ephemeral
+// embed receipt matching the weekly embeds.
 func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, submitted map[string]int, week time.Time, parseWarnings string) {
 	if len(submitted) == 0 {
 		r.Edit("Nothing was parsed from that input - no changes were made.")
@@ -125,38 +122,47 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		return
 	}
 
-	// Receipt: recorded/new/overwritten/auto-tracked + coverage +
-	// announcement status, all labeled with the week helper. Text only.
-	receipt := fmt.Sprintf("Recorded %d score(s) for %s.", len(plan.Changes), weekLabel)
+	// Receipt embed: recorded/new/overwritten/auto-tracked + coverage +
+	// announcement status, all labeled with the week helper. Rendered in the
+	// weekly embeds' color and posted ephemerally via EditData; long lists are
+	// trimmed with capList to stay under the embed limit.
+	desc := &strings.Builder{}
+	fmt.Fprintf(desc, "Recorded **%d** score(s).", len(plan.Changes))
 	if len(plan.NewNames) > 0 {
-		receipt += fmt.Sprintf("\nNew (%d): `%s`", len(plan.NewNames), strings.Join(capList(plan.NewNames, 20), "`, `"))
+		fmt.Fprintf(desc, "\nNew (%d): `%s`", len(plan.NewNames), strings.Join(capList(plan.NewNames, 20), "`, `"))
 	}
 	if len(plan.OverwrittenNames) > 0 {
-		receipt += fmt.Sprintf("\nOverwritten (%d): `%s`", len(plan.OverwrittenNames), strings.Join(capList(plan.OverwrittenNames, 20), "`, `"))
+		fmt.Fprintf(desc, "\nOverwritten (%d): `%s`", len(plan.OverwrittenNames), strings.Join(capList(plan.OverwrittenNames, 20), "`, `"))
 	}
 	if len(autoTracked) > 0 {
-		receipt += fmt.Sprintf("\nAuto-tracked (%d): `%s` (members can `/register` to claim them)",
+		fmt.Fprintf(desc, "\nAuto-tracked (%d): `%s` (members can `/register` to claim them)",
 			len(autoTracked), strings.Join(capList(autoTracked, 20), "`, `"))
 	}
 	if len(unverified) > 0 {
-		receipt += "\n:warning: Spelling unverified (not found on the official rankings): `" +
-			strings.Join(capList(unverified, 10), "`, `") + "` - fix mistakes with `/set-culvert` after `/unregister`-ing the typo."
+		fmt.Fprintf(desc, "\n:warning: Spelling unverified (not found on the official rankings): `%s` - fix mistakes with `/set-culvert` after `/unregister`-ing the typo.",
+			strings.Join(capList(unverified, 10), "`, `"))
 	}
 	scoredAfter := existingCount + len(plan.NewNames) + autoScored
 	totalTracked := len(tracked) + len(autoTracked)
-	receipt += fmt.Sprintf("\nCoverage: %d of %d tracked characters have a score for this week.", scoredAfter, totalTracked)
+	fmt.Fprintf(desc, "\nCoverage: %d of %d tracked characters have a score for this week.", scoredAfter, totalTracked)
 
 	if len(plan.Changes) > 0 {
 		changedIDs := make([]int64, 0, len(plan.Changes))
 		for _, c := range plan.Changes {
 			changedIDs = append(changedIDs, c.CharacterID)
 		}
-		receipt += announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, tenant, week, changedIDs))
+		desc.WriteString(announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, tenant, week, changedIDs)))
 	}
-	receipt += parseWarnings
-	receipt += rosterMeta.StalenessWarning()
+	desc.WriteString(parseWarnings)
+	desc.WriteString(rosterMeta.StalenessWarning())
 
-	r.EditChunked(receipt)
+	r.EditData(&discordgo.InteractionResponseData{
+		Embeds: []*discordgo.MessageEmbed{{
+			Title:       "Scores recorded - " + weekLabel,
+			Color:       apihelpers.WeekEmbedColor,
+			Description: desc.String(),
+		}},
+	})
 }
 
 // canonicalizeSubmitted rewrites submitted keys that match no tracked

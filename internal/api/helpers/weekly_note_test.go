@@ -1,15 +1,119 @@
 package helpers
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
-// An empty week renders a stable "nothing yet" note without touching the DB -
-// the path /reset-week relies on so the note clears instead of crashing.
-func TestBuildWeekNoteEmpty(t *testing.T) {
-	got := buildWeekNote(nil, time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC), "2026-08-12", nil)
-	if got != "No scores recorded yet this week." {
-		t.Errorf("empty-week note = %q", got)
+// An empty week renders a stable "nothing yet" personal-best embed without
+// touching the DB - the path /reset-week relies on so the thread clears
+// instead of crashing.
+func TestBuildWeekPBEmbedEmpty(t *testing.T) {
+	e := buildWeekPBEmbed(nil, time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC), nil)
+	if e == nil {
+		t.Fatal("buildWeekPBEmbed returned nil")
 	}
+	if e.Title != "New personal bests this week :tada:" {
+		t.Errorf("PB embed title = %q", e.Title)
+	}
+	if e.Description != "No scores recorded yet this week." {
+		t.Errorf("empty-week PB description = %q", e.Description)
+	}
+	if e.Color != weekEmbedColor {
+		t.Errorf("PB embed color = %d, want %d", e.Color, weekEmbedColor)
+	}
+}
+
+// The channel summary is an embed: coverage line, the top three with medals,
+// guild total, the shared color and footer, and a " (this week)" title suffix
+// for the live week only.
+func TestBuildWeeklySummaryEmbed(t *testing.T) {
+	rows := []weekScore{
+		{Name: "Alpha", Score: 300, Rank: 1},
+		{Name: "Beta", Score: 200, Rank: 2},
+	}
+
+	// Current week -> title gains " (this week)".
+	curWeek := cmdhelpers.CurrentCulvertWeek(time.Now())
+	curStr := curWeek.Format(time.DateOnly)
+	e := buildWeeklySummary(curWeek, curStr, 3, rows)
+	if want := "Culvert - week of " + curStr + " (this week)"; e.Title != want {
+		t.Errorf("current-week title = %q, want %q", e.Title, want)
+	}
+	if e.Color != weekEmbedColor {
+		t.Errorf("summary color = %d, want %d", e.Color, weekEmbedColor)
+	}
+	if e.Footer == nil || e.Footer.Text != "See /culvert-help to register your IGN to your Discord account" {
+		t.Errorf("summary footer = %+v", e.Footer)
+	}
+	for _, want := range []string{
+		"2 of 3 members submitted",
+		":first_place: `Alpha` - 300",
+		":second_place: `Beta` - 200",
+		"Guild total: **500**",
+	} {
+		if !strings.Contains(e.Description, want) {
+			t.Errorf("summary description missing %q:\n%s", want, e.Description)
+		}
+	}
+
+	// A past week -> no " (this week)" suffix.
+	pastStr := "2020-01-01"
+	past := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if p := buildWeeklySummary(past, pastStr, 3, rows); strings.Contains(p.Title, "(this week)") {
+		t.Errorf("past-week title must not say (this week): %q", p.Title)
+	}
+
+	// An empty week still renders coverage, not a crash.
+	if em := buildWeeklySummary(past, pastStr, 5, nil); !strings.Contains(em.Description, "0 of 5 members submitted") {
+		t.Errorf("empty-week summary description = %q", em.Description)
+	}
+}
+
+// BuildWeekTableEmbed renders at most the top 25 rows and folds the rest into a
+// trailing "... and N more (top 25 shown)" line, while the footer's coverage
+// still counts EVERY submitter.
+func TestBuildWeekTableEmbedTop25Cap(t *testing.T) {
+	rows := make([]weekScore, 0, 30)
+	for rank := 1; rank <= 30; rank++ {
+		rows = append(rows, weekScore{
+			CharacterID: int64(rank),
+			Name:        namePad(rank),
+			Score:       10000 - rank, // strictly descending
+			Rank:        rank,
+		})
+	}
+
+	e := BuildWeekTableEmbed("Full table", 30, rows, nil)
+
+	if e.Footer == nil || e.Footer.Text != "30 of 30 members submitted" {
+		t.Errorf("coverage footer must count all rows, got %+v", e.Footer)
+	}
+	if !strings.Contains(e.Description, "... and 5 more (top 25 shown)") {
+		t.Errorf("expected top-25 overflow line, description:\n%s", e.Description)
+	}
+	// Rank 25 rendered, rank 26 folded away.
+	if !strings.Contains(e.Description, namePad(25)) {
+		t.Errorf("rank 25 (%s) should be rendered", namePad(25))
+	}
+	if strings.Contains(e.Description, namePad(26)) {
+		t.Errorf("rank 26 (%s) should be capped out", namePad(26))
+	}
+	// 25 rendered rows + one overflow line.
+	if lines := strings.Count(e.Description, "\n") + 1; lines != 26 {
+		t.Errorf("rendered %d lines, want 26 (25 rows + overflow)", lines)
+	}
+
+	// 25 rows exactly -> no overflow line.
+	if e25 := BuildWeekTableEmbed("Full table", 25, rows[:25], nil); strings.Contains(e25.Description, "more (top 25 shown)") {
+		t.Errorf("exactly 25 rows must not show an overflow line:\n%s", e25.Description)
+	}
+}
+
+func namePad(rank int) string {
+	return fmt.Sprintf("Char%02d", rank)
 }

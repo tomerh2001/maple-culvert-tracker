@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"log"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -8,11 +9,11 @@ import (
 )
 
 // submitScoresCommand is the /submit-scores slash command: it OCRs the
-// screenshot(s) attached to the command and submits them, exactly like the
+// screenshot(s) attached to the command (or, when a message-link is given, the
+// images on that existing message) and submits them, exactly like the
 // right-click Submit Scores menu. Same guards, same safety gates, same
-// ephemeral receipt; the only difference is the input arrives as command
-// attachments instead of a target message. The resubmit-to-confirm overwrite
-// window is scoped per submitter + week (there is no target message id).
+// ephemeral receipt. Direct attachments take precedence over a message-link
+// when both are supplied.
 func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !requireSubmitPermission(s, i) {
 		return
@@ -27,28 +28,49 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	defer releaseSubmit(tenant)
 	r := deferReply(s, i, true)
 
-	imageURLs := commandImageURLs(i)
-	if len(imageURLs) == 0 {
-		r.editScreenshotFailure("Attach at least one screenshot to `/submit-scores`.")
-		return
-	}
-
-	// Optional date option: submit these screenshots for a specific week
-	// (YYYY-MM-DD or a Discord timestamp), refreshing that week's message.
+	// Options: an optional date (submit for a specific week, refreshing that
+	// week's message) and an optional message-link (submit an existing
+	// screenshot message's images into the chosen week).
 	week := helpers.CurrentCulvertWeek(time.Now())
+	messageLink := ""
 	for _, opt := range i.ApplicationCommandData().Options {
-		if opt.Name == "date" {
+		switch opt.Name {
+		case "date":
 			d, err := parseFlexibleDate(opt.StringValue())
 			if err != nil {
 				r.Edit(badDateMessage)
 				return
 			}
 			week = helpers.GetCulvertResetDate(d)
+		case "message-link":
+			messageLink = opt.StringValue()
 		}
 	}
 
 	scores := map[string]int{}
-	parseWarnings, ok := scoresFromImageURLs(r, tenant, imageURLs, scores)
+	var parseWarnings string
+	var ok bool
+	switch {
+	case len(commandImageURLs(i)) > 0:
+		// Direct attachments win over a message-link when both are provided.
+		parseWarnings, ok = scoresFromImageURLs(r, tenant, commandImageURLs(i), scores)
+	case messageLink != "":
+		channelID, messageID, err := parseMessageLink(messageLink)
+		if err != nil {
+			r.Edit(badMessageLinkMessage)
+			return
+		}
+		msg, err := s.ChannelMessage(channelID, messageID)
+		if err != nil {
+			log.Println("submitScoresCommand: fetch linked message:", err)
+			r.Edit("Failed to fetch the linked message - check the link and that the bot can read that channel.")
+			return
+		}
+		parseWarnings, ok = scoresFromMessage(s, r, tenant, msg, scores)
+	default:
+		r.editScreenshotFailure("Attach at least one screenshot to `/submit-scores`, or pass a `message-link` to an existing screenshot message.")
+		return
+	}
 	if !ok {
 		return
 	}

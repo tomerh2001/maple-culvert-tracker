@@ -65,3 +65,52 @@ func TestWeekPersonalBestsLineFormat(t *testing.T) {
 		}
 	}
 }
+
+// TestWeekPersonalBestsComparesAllPriorWeeks pins that a PB is measured against
+// EVERY prior week (score>0), including scores from before Date2mPatch - the
+// old patch-cutoff branch is gone. A pre-patch high score blocks a lower
+// current score from counting as a PB; a pre-patch low score is still beaten.
+func TestWeekPersonalBestsComparesAllPriorWeeks(t *testing.T) {
+	dbc := testdb.TestDB(t)
+	week := annWeek          // 2026-07-29
+	prePatch := "2025-01-01" // well before Date2mPatch (2025-10-01)
+
+	// Blocked: an old 500 (pre-patch) is higher than this week's 250.
+	var blockedID int64
+	if err := dbc.QueryRow(
+		`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ('AllPriorBlocked', '2', $1) RETURNING id`,
+		annTenantA).Scan(&blockedID); err != nil {
+		t.Fatalf("insert blocked character: %v", err)
+	}
+	// Beaten: an old 100 (pre-patch) is below this week's 250 -> a PB.
+	var beatenID int64
+	if err := dbc.QueryRow(
+		`INSERT INTO characters (maple_character_name, discord_user_id, guild_id) VALUES ('AllPriorBeaten', '2', $1) RETURNING id`,
+		annTenantA).Scan(&beatenID); err != nil {
+		t.Fatalf("insert beaten character: %v", err)
+	}
+	for _, s := range []struct {
+		id    int64
+		date  string
+		score int
+	}{
+		{blockedID, prePatch, 500}, {blockedID, week.Format(time.DateOnly), 250},
+		{beatenID, prePatch, 100}, {beatenID, week.Format(time.DateOnly), 250},
+	} {
+		if _, err := dbc.Exec(
+			`INSERT INTO character_culvert_scores (character_id, culvert_date, score) VALUES ($1, $2, $3)`,
+			s.id, s.date, s.score); err != nil {
+			t.Fatalf("insert score: %v", err)
+		}
+	}
+
+	rows := []weekScore{
+		{CharacterID: blockedID, Name: "AllPriorBlocked", DiscordUserID: "2", Score: 250},
+		{CharacterID: beatenID, Name: "AllPriorBeaten", DiscordUserID: "2", Score: 250},
+	}
+	got := weekPersonalBests(dbc, week, rows)
+	want := []string{"`AllPriorBeaten`: 100 -> 250"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("weekPersonalBests = %v, want %v (pre-patch scores must count as prior)", got, want)
+	}
+}

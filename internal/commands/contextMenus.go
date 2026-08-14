@@ -44,8 +44,8 @@ func collectImageURLs(msg *discordgo.Message) []string {
 // scores attachment it is submitted directly, otherwise the image attachments
 // are OCR'd and the result is submitted. Scores go to the current culvert
 // week; unknown names are always auto-tracked; nothing is ever zero-filled.
-// Existing differing scores trigger the resubmit-to-confirm overwrite flow
-// (see finalizeSubmitScores). The receipt is ephemeral.
+// Existing scores are always overwritten (see finalizeSubmitScores). The
+// receipt is ephemeral.
 func submitScoresFromMessage(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if !requireSubmitPermission(s, i) {
 		return

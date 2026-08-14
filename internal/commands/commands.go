@@ -113,10 +113,10 @@ var Commands = []*discordgo.ApplicationCommand{
 		Description: "Submit weekly culvert scores from screenshot(s) attached to this command",
 		Options: []*discordgo.ApplicationCommandOption{
 			{
-				Required:    true,
+				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionAttachment,
 				Name:        "screenshot",
-				Description: "A screenshot of the Guild - Member Participation Status window",
+				Description: "A screenshot of the Guild - Member Participation Status window (or use message-link)",
 			},
 			{
 				Required:    false,
@@ -147,6 +147,12 @@ var Commands = []*discordgo.ApplicationCommand{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "date",
 				Description: "Which week these are for (YYYY-MM-DD or a Discord timestamp; default: this week)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "message-link",
+				Description: "Submit an existing screenshot message's images instead (right click -> Copy Message Link)",
 			},
 		},
 	},
