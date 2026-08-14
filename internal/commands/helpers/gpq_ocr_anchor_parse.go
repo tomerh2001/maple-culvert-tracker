@@ -578,17 +578,29 @@ func parseAnchoredEngines(img image.Image, hit anchorHit, srcScale float64, font
 			// drops glyphs from its decode (binary templates lose whole
 			// letters on a smooth screenshot; NCC has less to say on a
 			// pixel-perfect one), so the longer decode wins, and equal
-			// lengths fall back to the explained-ink fraction with ties
-			// kept by the nearest engine (its match is exact where it
-			// applies at all). Ink counts are NOT compared across engines -
-			// each plane sees a different pixel population. The nearest
-			// engine must also retain a credible share of the ink the NCC
-			// plane sees, or its plane simply lost the text.
+			// lengths fall back to the explained-ink fraction. Ink counts are
+			// NOT compared across engines - each plane sees a different pixel
+			// population. The nearest engine must also retain a credible share
+			// of the ink the NCC plane sees, or its plane simply lost the text.
+			//
+			// On an EXACT fraction tie (both engines fully explain their own
+			// plane) with equal length but DIFFERING text, the two disagree
+			// only because the capture is blended - a crisp one would decode
+			// identically on both planes. There the binary engine's apparent
+			// "exactness" is illusory: it thresholded antialiased pixels, so it
+			// can read a confident but wrong glyph (real-full-6 reads the white
+			// "Nunez" as "Iunez", folding the N's diagonal into an I stem),
+			// while the NCC engine matched the continuous intensities. So a
+			// NAME tie resolves to the smooth decode. A SCORE tie stays with
+			// the nearest engine (preserveNearTie): a hallucinated digit
+			// corrupts a value, and the binary plane's exact digit match is the
+			// conservative choice where the two disagree on a number.
 			nearCredible := nearName.total*5 >= (nearName.total+smoothName.total)*2
-			pick := func(near, smooth anchorRowDecode, nearText, smoothText string) (string, bool, anchorRowDecode) {
+			pick := func(near, smooth anchorRowDecode, nearText, smoothText string, preserveNearTie bool) (string, bool, anchorRowDecode) {
 				nl, sl := len([]rune(nearText)), len([]rune(smoothText))
 				vNear := inkFraction(near.explained, near.total)
 				vSmooth := inkFraction(smooth.explained, smooth.total)
+				nearOnEqualFrac := vNear > vSmooth || (preserveNearTie && vNear == vSmooth)
 				switch {
 				case nl == 0 && sl == 0:
 					return "", false, smooth
@@ -596,14 +608,14 @@ func parseAnchoredEngines(img image.Image, hit anchorHit, srcScale float64, font
 					return nearText, true, near
 				case sl > nl:
 					return smoothText, false, smooth
-				case nearCredible && vNear >= vSmooth:
+				case nearCredible && nearOnEqualFrac:
 					return nearText, true, near
 				default:
 					return smoothText, false, smooth
 				}
 			}
-			nameT, viaNearest, nameSrc := pick(nearName, smoothName, nearName.name, smoothName.name)
-			scoreT, _, scoreSrc := pick(nearScore, smoothScore, nearScore.score, smoothScore.score)
+			nameT, viaNearest, nameSrc := pick(nearName, smoothName, nearName.name, smoothName.name, false)
+			scoreT, _, scoreSrc := pick(nearScore, smoothScore, nearScore.score, smoothScore.score, true)
 			if nameT == "" {
 				return
 			}
