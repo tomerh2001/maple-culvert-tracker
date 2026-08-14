@@ -70,8 +70,15 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		// A message-link must point at THIS server's data - never let one
 		// tenant pull another server's screenshots (the link only carries
 		// channel+message ids, so the bot could otherwise read any channel it
-		// can see).
-		if data.TenantID(msg.GuildID) != tenant {
+		// can see). A REST-fetched message has no guild_id, so fall back to the
+		// channel's guild; an unresolved guild ("") fails closed.
+		guildID := msg.GuildID
+		if guildID == "" {
+			if ch, cerr := s.Channel(channelID); cerr == nil && ch != nil {
+				guildID = ch.GuildID
+			}
+		}
+		if data.TenantID(guildID) != tenant {
 			r.Edit("That message is from a different server. You can only submit a message-link from a channel in this server.")
 			return
 		}
