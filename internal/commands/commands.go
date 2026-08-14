@@ -6,7 +6,7 @@ import (
 
 var setCulvertScoreMin = float64(0)
 
-// Commands is the ENTIRE deliberately-small surface: 11 slash commands and 2
+// Commands is the ENTIRE deliberately-small surface: 13 slash commands and 2
 // context menus, registered GLOBALLY (any server may install the bot; each
 // server's data is tenant-isolated). Scores are submitted from screenshots
 // either by right clicking a message (Apps -> Submit Scores) or by attaching
@@ -54,6 +54,22 @@ var Commands = []*discordgo.ApplicationCommand{
 				Description: "Untrack ALL characters of this member (submitters only; default: yourself)",
 			},
 		},
+	},
+	{
+		Name:        "characters",
+		Description: "List the MapleStory characters linked to a member (yours by default)",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionUser,
+				Name:        "user",
+				Description: "Whose linked characters to list (default: yourself)",
+			},
+		},
+	},
+	{
+		Name:        "registered",
+		Description: "List every member who has linked a character",
 	},
 	{
 		Name:        "culvert",

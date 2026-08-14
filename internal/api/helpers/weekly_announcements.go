@@ -538,8 +538,11 @@ func buildWeekNote(dbc *sql.DB, week time.Time, weekStr string, rows []weekScore
 	return note
 }
 
-// weekPersonalBests returns congratulation lines ("@member (Name): old -> new")
-// for every character whose this-week score beats their best in prior weeks.
+// weekPersonalBests returns one congratulation line per character whose
+// this-week score beats their best in prior weeks. The character name is always
+// in backticks; a linked character is @mentioned before it ("<@id> `Name`: old
+// -> new"), an unlinked one shows just the backticked name ("`Name`: old ->
+// new").
 func weekPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore) []string {
 	patchCutoff := ""
 	if week.After(data.Date2mPatch) {
@@ -567,7 +570,7 @@ func weekPersonalBests(dbc *sql.DB, week time.Time, rows []weekScore) []string {
 		}
 		who := "`" + r.Name + "`"
 		if r.DiscordUserID != "" && r.DiscordUserID != "1" && r.DiscordUserID != "2" {
-			who = "<@" + r.DiscordUserID + "> (" + r.Name + ")"
+			who = "<@" + r.DiscordUserID + "> `" + r.Name + "`"
 		}
 		out = append(out, fmt.Sprintf("%s: %s -> %s", who, FormatThousands(int(best.Int64)), FormatThousands(r.Score)))
 	}

@@ -15,6 +15,8 @@ var CommandHandlers = map[string]func(s *discordgo.Session, i *discordgo.Interac
 	"culvert-all":   culvertBoard,
 	"register":      registerCharacter,
 	"unregister":    unregisterCharacter,
+	"characters":    charactersCommand,
+	"registered":    registeredCommand,
 	"submit-scores": submitScoresCommand,
 	"set-culvert":   setCulvert,
 	"config":        configCommand,

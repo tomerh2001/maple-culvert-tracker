@@ -11,6 +11,16 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
 )
 
+// characterOwnedByAnother reports whether an existing character row is linked to
+// a DIFFERENT real member than the intended target: its owner is neither the
+// target nor a sentinel (untracked '1', unlinked '2', or the empty pre-tenant
+// default). /register refuses to move such a character unless the caller can
+// submit scores. Factored out so the multi-IGN ownership invariant is testable.
+func characterOwnedByAnother(existingOwner, targetID string) bool {
+	return existingOwner != targetID &&
+		existingOwner != "1" && existingOwner != "2" && existingOwner != ""
+}
+
 // registerCharacter links a MapleStory character to a Discord account:
 // your own by default, or someone else's via user:@member (submitters only).
 func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -78,7 +88,7 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	case existingOwner == targetID:
 		r.Edit("`" + characterName + "` is already registered to " + who + ". Nothing to do!" + warning)
 		return
-	case existingOwner != "1" && existingOwner != "2" && existingOwner != "" && !canSubmitScores(i):
+	case characterOwnedByAnother(existingOwner, targetID) && !canSubmitScores(i):
 		r.Edit("`" + characterName + "` is already registered to <@" + existingOwner + ">. If that's wrong, ask an admin or submitter to move it with `/register name:" + characterName + " user:@the-right-person`.")
 		return
 	default:
