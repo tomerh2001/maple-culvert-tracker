@@ -29,12 +29,9 @@ Just run ` + "`/register`" + ` - it reads your Discord server nickname and links
 
 **2) See your progress**
 - ` + "`/culvert`" + ` - your weekly culvert scores as a chart
-- Add ` + "`from:`" + `/` + "`to:`" + ` (YYYY-MM-DD or a Discord timestamp) to filter a specific time window
 
 **3) How scores get in**
-Submitters submit a screenshot of the in-game ranking two ways:
-- Right click the message -> Apps -> **Submit Scores**.
-- Using ` + "`/submit-scores`" + `.
+Submitters submit a screenshot of the in-game ranking - right click a message -> Apps -> **Submit Scores**, or use ` + "`/submit-scores`" + `.
 
 If your score is missing, let an admin know.
 
