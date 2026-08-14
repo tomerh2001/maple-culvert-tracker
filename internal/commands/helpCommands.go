@@ -36,7 +36,6 @@ Run ` + "`/culvert`" + ` to view your weekly Culvert scores and progress as a ch
 Submitters upload a screenshot of the in-game Culvert rankings. To submit scores:
 - Right click the screenshot message → Apps → **Submit Scores**
 - Or run ` + "`/submit-scores`" + `
-
 If one of your scores is missing, let an admin know.
 
 **4) Weekly reset**
