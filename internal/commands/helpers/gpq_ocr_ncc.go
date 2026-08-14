@@ -1109,7 +1109,25 @@ func nccCandidatesAt(p *nccPlane, f *grayFont, x, y0, y1 int, loosePre, tightPre
 		// the area, so charging its full ink would make it cost double a
 		// single at the same correlation - unbeatable by design.
 		nRunes := len([]rune(g.text))
-		cost := int((1-best)*f.costScale*float64(g.ink)/float64(nRunes)) + residual
+		per := (1 - best) * f.costScale * float64(g.ink) / float64(nRunes)
+		cost := int(per) + residual
+		if nRunes > 1 {
+			// Segmentation surcharge on multi-rune composites. The /nRunes
+			// discount above lets a composite integrate its whole area yet be
+			// charged like ONE glyph, so a genuinely merged form (a crossbar
+			// chain single templates cannot fit at all) stays competitive. But
+			// that discount must be EARNED by fit: a composite riding the
+			// acceptance floor fits no better than the individual glyphs it
+			// spans, and keeping the full discount there lets it steal a
+			// well-formed glyph pair - the merged-crossbar family matches "ez"
+			// as "tfz" at NCC ~0.62, one boundary cheaper than the correct
+			// e+z. So charge each EXTRA rune the single-glyph shortfall it
+			// represents, weighted AGAIN by the composite's own misfit
+			// (1-best): a near-perfect composite (the legitimate merges) pays
+			// almost nothing, while a floor-riding one pays per spurious
+			// segment and can no longer out-cheap the wider glyphs it split.
+			cost += int(per * (1 - best) * float64(nRunes-1))
+		}
 		if f.faintDiv > 0 && thrCore > thrMid {
 			// Faint-ink weight of the window (band rows, advance columns)
 			// minus what the template explains: sub-core evidence (blurred
