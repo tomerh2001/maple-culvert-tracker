@@ -117,9 +117,10 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 
-	// No explicit name -> infer the caller's IGNs from their server nickname.
+	// No explicit name -> infer IGNs from a server nickname (the caller's, or
+	// the given member's via user:).
 	if characterName == "" {
-		registerFromNickname(s, i, r, tenant, callerID, userGiven)
+		registerFromNickname(s, i, r, tenant, callerID, targetID, userGiven)
 		return
 	}
 
@@ -162,18 +163,15 @@ func registerCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	r.Edit("Done! `" + res.name + "` is now registered to you. :tada:" + warning + "\nTry `/culvert` to see your progression once your scores are in.")
 }
 
-// registerFromNickname handles `/register` with no name: it parses the caller's
-// server nickname into IGNs (see parseNicknameIGNs) and registers each for the
-// CALLER only, replying with one combined ephemeral receipt. The user: option
-// is intentionally ignored here - a nickname only ever describes its own owner
-// - so we require an explicit name: when user: is set rather than parse a
-// nickname on someone else's behalf.
-func registerFromNickname(s *discordgo.Session, i *discordgo.InteractionCreate, r *reply, tenant, callerID string, userGiven bool) {
-	if userGiven {
-		r.Edit("To register for someone else, include the character name: `/register name:TheirCharacter user:@member`. Without a name I can only read *your* nickname.")
-		return
-	}
-
+// registerFromNickname handles `/register` with no name: it parses a server
+// nickname into IGNs (see parseNicknameIGNs) and registers each, replying with
+// one combined ephemeral receipt. By default it reads the CALLER's own
+// nickname; with user:@member (submitters only) it reads THAT member's
+// nickname and registers the IGNs for them - handy for onboarding a teammate
+// whose nickname already lists their characters (e.g. `Sen | A/B/C`).
+func registerFromNickname(s *discordgo.Session, i *discordgo.InteractionCreate, r *reply, tenant, callerID, targetID string, userGiven bool) {
+	forOther := userGiven && targetID != callerID
+	regTarget := callerID
 	source := i.Member.Nick
 	if source == "" {
 		source = i.Member.User.GlobalName
@@ -181,9 +179,35 @@ func registerFromNickname(s *discordgo.Session, i *discordgo.InteractionCreate, 
 	if source == "" {
 		source = i.Member.User.Username
 	}
+	whose := "your"
+
+	if forOther {
+		if !canSubmitScores(i) {
+			r.Edit("Reading someone else's nickname to register their characters needs submitter permissions. They can run `/register` themselves.")
+			return
+		}
+		m, err := s.GuildMember(i.GuildID, targetID)
+		if err != nil || m == nil {
+			log.Println("register: guild member lookup failed:", err)
+			r.Edit("I couldn't look up <@" + targetID + ">. Register explicitly with `/register name:TheirCharacter user:@member`.")
+			return
+		}
+		regTarget = targetID
+		whose = "<@" + targetID + ">'s"
+		source = m.Nick
+		if m.User != nil {
+			if source == "" {
+				source = m.User.GlobalName
+			}
+			if source == "" {
+				source = m.User.Username
+			}
+		}
+	}
+
 	igns := parseNicknameIGNs(source)
 	if len(igns) == 0 {
-		r.Edit("I couldn't find any character names in your server nickname. Register explicitly with `/register name:YourCharacter`.")
+		r.Edit("I couldn't find any character names in " + whose + " server nickname. Register explicitly with `/register name:TheCharacter`.")
 		return
 	}
 
@@ -196,7 +220,7 @@ func registerFromNickname(s *discordgo.Session, i *discordgo.InteractionCreate, 
 		} else {
 			seen[key] = true
 		}
-		res := registerIGN(tenant, ign, callerID, canSubmit)
+		res := registerIGN(tenant, ign, regTarget, canSubmit)
 		switch res.outcome {
 		case regRegistered:
 			registered = append(registered, res.name)
@@ -214,12 +238,16 @@ func registerFromNickname(s *discordgo.Session, i *discordgo.InteractionCreate, 
 		}
 	}
 
+	mine := "yours"
+	if forOther {
+		mine = "theirs"
+	}
 	parts := []string{}
 	if len(registered) > 0 {
 		parts = append(parts, "Registered: "+quoteList(registered))
 	}
 	if len(alreadyYours) > 0 {
-		parts = append(parts, "already yours: "+quoteList(alreadyYours))
+		parts = append(parts, "already "+mine+": "+quoteList(alreadyYours))
 	}
 	if len(ownedByOther) > 0 {
 		parts = append(parts, "skipped (owned by someone else): "+quoteList(ownedByOther))
@@ -230,6 +258,9 @@ func registerFromNickname(s *discordgo.Session, i *discordgo.InteractionCreate, 
 	receipt := strings.Join(parts, "; ")
 	if receipt != "" { // capitalise the leading label for a standalone sentence
 		receipt = strings.ToUpper(receipt[:1]) + receipt[1:]
+	}
+	if forOther && receipt != "" {
+		receipt = "For <@" + targetID + "> - " + receipt
 	}
 	if len(unverified) > 0 {
 		receipt += "\n:warning: Couldn't verify " + quoteList(unverified) + " against the official rankings - double-check the spelling."

@@ -23,6 +23,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid bot parameters: %v", err)
 	}
+	commands.AddStartupWeeklyRefresh(api.DiscordSession)
 	err = api.DiscordSession.Open()
 	if err != nil {
 		log.Fatalf("Cannot open the session: %v", err)
