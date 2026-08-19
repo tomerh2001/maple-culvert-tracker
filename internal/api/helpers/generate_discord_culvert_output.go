@@ -5,13 +5,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
-func GenerateDiscordCulvertOutput(chartImageBinData io.ReadCloser, tenantID string, charName string, date string, otherStatsStruct *data.CharacterStatistics) *discordgo.InteractionResponseData {
+// GenerateDiscordCulvertOutput builds the public embed for one character's
+// culvert chart. updatedAt/latestWeek describe how current the charted scores
+// are (see StampLastUpdated).
+func GenerateDiscordCulvertOutput(chartImageBinData io.ReadCloser, tenantID string, charName string, date string, otherStatsStruct *data.CharacterStatistics, updatedAt time.Time, latestWeek string) *discordgo.InteractionResponseData {
 	// date is possibly empty
 	content := strings.Trim(charName+" "+date, " ")
 
@@ -83,6 +87,8 @@ func GenerateDiscordCulvertOutput(chartImageBinData io.ReadCloser, tenantID stri
 			},
 		)
 	}
+
+	StampLastUpdated(embeddedData, updatedAt, latestWeek)
 
 	return &discordgo.InteractionResponseData{
 		Embeds: []*discordgo.MessageEmbed{embeddedData},

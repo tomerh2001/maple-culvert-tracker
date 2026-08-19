@@ -32,11 +32,9 @@ Other character commands:
 **2) Track your progress**
 Run ` + "`/culvert`" + ` to view your weekly Culvert scores and progress as a chart.
 
-**3) How scores are added**
-Submitters upload a screenshot of the in-game Culvert rankings. To submit scores:
-- Right click the screenshot message → Apps → **Submit Scores**
-- Or run ` + "`/submit-scores`" + `
-If one of your scores is missing, let an admin know.
+**3) How scores are added** — :lock: admins & submitters only
+You never submit your own scores. An admin (or a member with the submitter role) posts a screenshot of the in-game Culvert rankings and the bot reads every score off it: right click the screenshot message → Apps → **Submit Scores**, or ` + "`/submit-scores`" + `.
+If one of your scores is missing or wrong, let an admin know - you can't add it yourself.
 
 **4) Weekly reset**
 The Culvert week resets every week.
