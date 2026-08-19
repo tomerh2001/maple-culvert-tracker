@@ -4,6 +4,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -12,9 +13,10 @@ import (
 // multi-character culvert chart: one line per character (colors + legend live
 // in the chart image itself). names are the charted character names in chart
 // order; more>0 appends a "+N more" note for characters the series cap dropped.
-// date is the optional `to` week label. It mirrors the single-series output's
-// EditData shape (embed + image attachment).
-func GenerateDiscordCulvertMultiOutput(chartImageBinData io.ReadCloser, date string, names []string, more int) *discordgo.InteractionResponseData {
+// date is the optional `to` week label. updatedAt/latestWeek describe how
+// current the charted scores are (see StampLastUpdated). It mirrors the
+// single-series output's EditData shape (embed + image attachment).
+func GenerateDiscordCulvertMultiOutput(chartImageBinData io.ReadCloser, date string, names []string, more int, updatedAt time.Time, latestWeek string) *discordgo.InteractionResponseData {
 	title := strings.TrimSpace("Culvert " + date)
 
 	desc := "Comparing " + strconv.Itoa(len(names)) + " characters"
@@ -34,6 +36,8 @@ func GenerateDiscordCulvertMultiOutput(chartImageBinData io.ReadCloser, date str
 			URL: "attachment://image.png",
 		},
 	}
+
+	StampLastUpdated(embeddedData, updatedAt, latestWeek)
 
 	return &discordgo.InteractionResponseData{
 		Embeds: []*discordgo.MessageEmbed{embeddedData},

@@ -173,9 +173,11 @@ func renameCharacter(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}()
 
 	if _, err := tx.Exec(
-		`INSERT INTO character_culvert_scores (culvert_date, character_id, score)
-		 SELECT culvert_date, $1, score FROM character_culvert_scores WHERE character_id = $2
-		 ON CONFLICT (culvert_date, character_id) DO UPDATE SET score = EXCLUDED.score`,
+		// updated_at rides along with the score it belongs to: a rename moves
+		// existing rows, it does not change anyone's score.
+		`INSERT INTO character_culvert_scores (culvert_date, character_id, score, updated_at)
+		 SELECT culvert_date, $1, score, updated_at FROM character_culvert_scores WHERE character_id = $2
+		 ON CONFLICT (culvert_date, character_id) DO UPDATE SET score = EXCLUDED.score, updated_at = EXCLUDED.updated_at`,
 		tgt.id, src.id); err != nil {
 		log.Println("rename: merge scores failed:", err)
 		r.Edit("Something went wrong merging scores. Please try again later.")

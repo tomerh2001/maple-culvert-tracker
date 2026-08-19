@@ -124,3 +124,23 @@ func TestUpsertCulvertScoresEmptyIsNoOpOnRealDB(t *testing.T) {
 		t.Fatalf("empty upsert wrote rows: %v", got)
 	}
 }
+
+// Every written row carries a write time - the stamp /culvert reports as
+// "scores last updated".
+func TestUpsertCulvertScoresStampsUpdatedAt(t *testing.T) {
+	dbc := testdb.TestDB(t)
+	idA := insertTestCharacter(t, dbc, "UpsertStamped")
+
+	if err := UpsertCulvertScores(dbc, testWeek, []ScoreChange{{CharacterID: idA, Score: 100}}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	var stamped bool
+	if err := dbc.QueryRow(
+		`SELECT updated_at IS NOT NULL FROM character_culvert_scores WHERE character_id = $1 AND culvert_date = $2`,
+		idA, testWeek.Format(time.DateOnly)).Scan(&stamped); err != nil {
+		t.Fatalf("reading updated_at: %v", err)
+	}
+	if !stamped {
+		t.Fatal("written score has no updated_at stamp")
+	}
+}

@@ -278,8 +278,8 @@ func setCulvert(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 	if _, err := db.DB.Exec(
-		`INSERT INTO character_culvert_scores (character_id, culvert_date, score) VALUES ($1, $2, $3)
-		 ON CONFLICT (culvert_date, character_id) DO UPDATE SET score = $3`,
+		`INSERT INTO character_culvert_scores (character_id, culvert_date, score, updated_at) VALUES ($1, $2, $3, NOW())
+		 ON CONFLICT (culvert_date, character_id) DO UPDATE SET score = $3, updated_at = NOW()`,
 		charID, weekStr, score); err != nil {
 		log.Println("set-culvert:", err)
 		r.Edit("Something went wrong saving the score. Please try again later.")

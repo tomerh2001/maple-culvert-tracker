@@ -34,7 +34,51 @@ type culvertCharRef struct {
 // userMentionRe matches a Discord user mention: <@123> or <@!123>.
 var userMentionRe = regexp.MustCompile(`^<@!?(\d+)>$`)
 
-// culvertBase serves /culvert (public) and the Culvert user context menu.
+// culvertFreshnessLine tells a member how current this server's culvert data
+// is, so an empty answer reads as "your score is missing" rather than "the bot
+// is broken". It returns "" when the lookup fails - freshness is a nicety, it
+// never replaces the answer itself.
+func culvertFreshnessLine(tenant string) string {
+	fresh, err := cmdhelpers.TenantLastScoreUpdate(db.DB, tenant)
+	if err != nil {
+		log.Println("culvert: last score update lookup:", err)
+		return ""
+	}
+	switch {
+	case !fresh.At.IsZero():
+		return "\nThis server's scores were last updated " + cmdhelpers.DiscordTimestamp(fresh.At, "f") +
+			" (" + cmdhelpers.DiscordTimestamp(fresh.At, "R") + ")."
+	case !fresh.LastWeek.IsZero():
+		// Scores recorded before db_migrations/8 carry no write stamp; the
+		// newest scored week is all the freshness that was ever recorded.
+		return "\nThe latest recorded week here is " + fresh.LastWeek.Format(time.DateOnly) +
+			" (its exact update time wasn't recorded)."
+	default:
+		return "\nNo culvert scores have been submitted on this server yet."
+	}
+}
+
+// culvertLastUpdate reports how current the given characters' charted scores
+// are, as the (write time, newest scored week) pair the chart embed stamps
+// itself with (see helpers.StampLastUpdated). A failed lookup degrades to an
+// unstamped embed rather than to no chart.
+func culvertLastUpdate(ids []int64, fromKey, toKey string) (time.Time, string) {
+	fresh, err := cmdhelpers.CharactersLastScoreUpdate(db.DB, ids, fromKey, toKey)
+	if err != nil {
+		log.Println("culvert: character last score update lookup:", err)
+		return time.Time{}, ""
+	}
+	week := ""
+	if !fresh.LastWeek.IsZero() {
+		week = fresh.LastWeek.Format(time.DateOnly)
+	}
+	return fresh.At, week
+}
+
+// culvertBase serves /culvert and the Culvert user context menu. Only an
+// actual chart is posted publicly: every other outcome - no data, bad input,
+// a backend failure - goes back through reply.EditPrivate so the channel never
+// carries a non-answer.
 // name resolves to either a member (mention / empty = invoker / menu target:
 // their registered characters, with a choice list when they have several) or
 // a tracked character by name (case-insensitive). from/to bound the charted
@@ -81,7 +125,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if fromStr != "" {
 		d, err := parseFlexibleDate(fromStr)
 		if err != nil {
-			r.Edit(badDateMessage)
+			r.EditPrivate(badDateMessage)
 			return
 		}
 		fromKey = cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)
@@ -89,13 +133,13 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if toStr != "" {
 		d, err := parseFlexibleDate(toStr)
 		if err != nil {
-			r.Edit(badDateMessage)
+			r.EditPrivate(badDateMessage)
 			return
 		}
 		toKey = cmdhelpers.GetCulvertResetDate(d).Format(time.DateOnly)
 	}
 	if fromKey != "" && toKey != "" && fromKey > toKey {
-		r.Edit("`from` is after `to` - nothing to chart.")
+		r.EditPrivate("`from` is after `to` - nothing to chart.")
 		return
 	}
 
@@ -108,7 +152,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	stmt, err := db.DB.Prepare(sql)
 	if err != nil {
 		log.Println("culvert: prepare find characters:", err)
-		r.Edit("Something went wrong querying the database.")
+		r.EditPrivate("Something went wrong querying the database.")
 		return
 	}
 	args := []any{tenant}
@@ -118,7 +162,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	rows, err := stmt.Query(args...)
 	if err != nil {
 		log.Println("culvert: query find characters:", err)
-		r.Edit("Something went wrong querying the database.")
+		r.EditPrivate("Something went wrong querying the database.")
 		return
 	}
 	count := 0
@@ -148,7 +192,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if byName {
 		hit, ok := characters[charName]
 		if !ok {
-			r.Edit("No tracked character named `" + nameArg + "` found. Check the spelling, or mention the member instead (`/culvert name:@them`).")
+			r.EditPrivate("No tracked character named `" + nameArg + "` found. Check the spelling, or mention the member instead (`/culvert name:@them`).")
 			return
 		}
 		matchedID, matchedName = hit.id, hit.name
@@ -160,7 +204,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				msg = "You haven't registered a MapleStory character yet!\n" +
 					"Type `/register` and enter your character name (for example `/register name:HTomer`), then try again."
 			}
-			r.Edit(msg)
+			r.EditPrivate(msg)
 			return
 		}
 		if count > 1 {
@@ -187,14 +231,14 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	stmt, err = db.DB.Prepare(sql)
 	if err != nil {
 		log.Println("culvert: prepare scores query:", err)
-		r.Edit("Something went wrong querying the database.")
+		r.EditPrivate("Something went wrong querying the database.")
 		return
 	}
 	defer stmt.Close()
 	rows, err = stmt.Query(args...)
 	if err != nil {
 		log.Println("culvert: scores query:", err)
-		r.Edit("Something went wrong querying the database.")
+		r.EditPrivate("Something went wrong querying the database.")
 		return
 	}
 	defer rows.Close()
@@ -208,7 +252,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	if len(chartData) == 0 {
-		r.Edit("No data on " + matchedName + " in that period...")
+		r.EditPrivate("No data on " + matchedName + " in that period..." + culvertFreshnessLine(tenant))
 		return
 	}
 	slices.Reverse(chartData)
@@ -216,7 +260,7 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	jsonData, err := json.Marshal(chartData)
 	if err != nil {
 		log.Println("culvert: chart data marshal failed:", err)
-		r.Edit("Something went wrong building the chart data.")
+		r.EditPrivate("Something went wrong building the chart data.")
 		return
 	}
 
@@ -225,11 +269,12 @@ func culvertBase(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker?y-axis-start-at-0=false", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil || resp.StatusCode != http.StatusOK {
-		r.Edit("Looks like my `chartmaker` component is broken... ")
+		r.EditPrivate("Looks like my `chartmaker` component is broken... ")
 		return
 	}
 	defer resp.Body.Close()
-	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, tenant, matchedName, toKey, statistics))
+	updatedAt, latestWeek := culvertLastUpdate([]int64{matchedID}, fromKey, toKey)
+	r.EditData(helpers.GenerateDiscordCulvertOutput(resp.Body, tenant, matchedName, toKey, statistics, updatedAt, latestWeek))
 }
 
 // renderMultiCulvertChart charts every one of a member's registered characters
@@ -254,7 +299,7 @@ func renderMultiCulvertChart(r *reply, tenant, targetUserID string, refs []culve
 	stmt, err := db.DB.Prepare(sql)
 	if err != nil {
 		log.Println("culvert: prepare multi scores query:", err)
-		r.Edit("Something went wrong querying the database.")
+		r.EditPrivate("Something went wrong querying the database.")
 		return
 	}
 	defer stmt.Close()
@@ -265,7 +310,7 @@ func renderMultiCulvertChart(r *reply, tenant, targetUserID string, refs []culve
 		rows, err := stmt.Query(args...)
 		if err != nil {
 			log.Println("culvert: multi scores query:", err)
-			r.Edit("Something went wrong querying the database.")
+			r.EditPrivate("Something went wrong querying the database.")
 			return
 		}
 		pts := []data.ChartMakerPoints{}
@@ -282,27 +327,38 @@ func renderMultiCulvertChart(r *reply, tenant, targetUserID string, refs []culve
 
 	payload, more, ok := buildCulvertSeries(series, maxCulvertChartSeries)
 	if !ok {
-		r.Edit("No culvert data for <@" + targetUserID + ">'s characters in that period...")
+		r.EditPrivate("No culvert data for <@" + targetUserID + ">'s characters in that period..." + culvertFreshnessLine(tenant))
 		return
 	}
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		log.Println("culvert: multi chart data marshal failed:", err)
-		r.Edit("Something went wrong building the chart data.")
+		r.EditPrivate("Something went wrong building the chart data.")
 		return
 	}
 
 	resp, err := http.Post("http://"+os.Getenv(data.EnvVarChartMakerHost)+"/chartmaker-multiple", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil || resp.StatusCode != http.StatusOK {
-		r.Edit("Looks like my `chartmaker` component is broken... ")
+		r.EditPrivate("Looks like my `chartmaker` component is broken... ")
 		return
 	}
 	defer resp.Body.Close()
 
+	// "Scores last updated" covers exactly the characters the chart drew, not
+	// the ones the series cap dropped.
+	idsByName := make(map[string]int64, len(refs))
+	for _, ref := range refs {
+		idsByName[ref.name] = ref.id
+	}
 	names := make([]string, len(payload.DataPlots))
+	charted := make([]int64, 0, len(payload.DataPlots))
 	for i, p := range payload.DataPlots {
 		names[i] = p.CharacterName
+		if id, ok := idsByName[p.CharacterName]; ok {
+			charted = append(charted, id)
+		}
 	}
-	r.EditData(helpers.GenerateDiscordCulvertMultiOutput(resp.Body, toKey, names, more))
+	updatedAt, latestWeek := culvertLastUpdate(charted, fromKey, toKey)
+	r.EditData(helpers.GenerateDiscordCulvertMultiOutput(resp.Body, toKey, names, more, updatedAt, latestWeek))
 }

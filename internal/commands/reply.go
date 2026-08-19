@@ -43,6 +43,37 @@ func (r *reply) Edit(msg string) {
 	}
 }
 
+// EditPrivate answers with a message only the invoking user can see, even on
+// a PUBLIC reply. Discord fixes a response's visibility when it is deferred,
+// so a public command can only go private by delivering the message as an
+// ephemeral followup and dropping the public placeholder - /culvert uses this
+// for every outcome that is not an actual chart, so the channel never sees
+// "no data" or an error.
+//
+// The followup goes out BEFORE the placeholder is deleted: if it fails there
+// is still a response to fall back to, and the user is never left with
+// nothing.
+func (r *reply) EditPrivate(msg string) {
+	if r.ephemeral {
+		r.Edit(msg)
+		return
+	}
+	if _, err := r.s.FollowupMessageCreate(r.i.Interaction, true, &discordgo.WebhookParams{
+		Content: msg,
+		Flags:   discordgo.MessageFlagsEphemeral,
+	}); err != nil {
+		log.Println("reply.EditPrivate: FollowupMessageCreate:", err)
+		r.Edit(msg)
+		return
+	}
+	// The deferred placeholder is public: remove it so only the ephemeral
+	// followup remains. A failure here leaves a stray "thinking" placeholder,
+	// not a wrong answer.
+	if err := r.s.InteractionResponseDelete(r.i.Interaction); err != nil {
+		log.Println("reply.EditPrivate: InteractionResponseDelete:", err)
+	}
+}
+
 // EditData edits the deferred response from an InteractionResponseData
 // (embeds + files + content) - the /culvert chart path.
 func (r *reply) EditData(d *discordgo.InteractionResponseData) {
