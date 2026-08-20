@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	apihelpers "github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
@@ -49,12 +50,13 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	scores := map[string]int{}
+	var pages []apihelpers.ScreenshotPage
 	var parseWarnings string
 	var ok bool
 	switch {
 	case len(commandImageURLs(i)) > 0:
 		// Direct attachments win over a message-link when both are provided.
-		parseWarnings, ok = scoresFromImageURLs(r, tenant, commandImageURLs(i), scores)
+		pages, parseWarnings, ok = scoresFromImageURLs(r, tenant, commandImageURLs(i), scores)
 	case messageLink != "":
 		channelID, messageID, err := parseMessageLink(messageLink)
 		if err != nil {
@@ -82,7 +84,7 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			r.Edit("That message is from a different server. You can only submit a message-link from a channel in this server.")
 			return
 		}
-		parseWarnings, ok = scoresFromMessage(s, r, tenant, msg, scores)
+		pages, parseWarnings, ok = scoresFromMessage(s, r, tenant, msg, scores)
 	default:
 		r.editScreenshotFailure("Attach at least one screenshot to `/submit-scores`, or pass a `message-link` to an existing screenshot message.")
 		return
@@ -91,7 +93,7 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	finalizeSubmitScores(s, r, i, scores, week, parseWarnings)
+	finalizeSubmitScores(s, r, i, scores, week, parseWarnings, pages)
 }
 
 // commandImageURLs collects the image attachment URLs supplied to a slash

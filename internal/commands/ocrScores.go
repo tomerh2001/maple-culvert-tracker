@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	apihelpers "github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/db"
@@ -20,6 +21,10 @@ import (
 
 // ocrOutcome is the merged result of OCRing one message's images.
 type ocrOutcome struct {
+	// pages holds each successfully parsed image as a screenshot-archive page
+	// (raw bytes + the names decoded off it), in attachment order - the feed
+	// for the weekly screenshot archive channel.
+	pages []apihelpers.ScreenshotPage
 	// merged holds one entry per distinct parsed row across all images
 	// (attachment order preserved, top-to-bottom rows). Rows are keyed by
 	// their identity (reconciled member when matched, raw decode otherwise):
@@ -56,8 +61,9 @@ func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error)
 
 	// Process each image in parallel: download into memory then parse.
 	type imgResult struct {
-		res *helpers.ParseResult
-		err error
+		res  *helpers.ParseResult
+		data []byte
+		err  error
 	}
 	results := make([]imgResult, len(imageURLs))
 	var wg sync.WaitGroup
@@ -79,7 +85,7 @@ func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error)
 				log.Printf("ocrImagesToScores: parsed %d rows in %s (engine %s, scale %.2f, truncated %v)",
 					len(res.Rows), time.Since(start).Round(time.Millisecond), res.Engine, res.Scale, res.Truncated)
 			}
-			results[idx] = imgResult{res: res, err: err}
+			results[idx] = imgResult{res: res, data: data, err: err}
 		}(idx, url)
 	}
 	wg.Wait()
@@ -103,6 +109,11 @@ func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error)
 			}
 			out.defects = append(out.defects, d)
 		}
+		pageNames := make([]string, 0, len(r.res.Rows))
+		for _, e := range r.res.Rows {
+			pageNames = append(pageNames, e.Name)
+		}
+		out.pages = append(out.pages, apihelpers.ScreenshotPage{Bytes: r.data, Names: pageNames})
 		for _, e := range r.res.Rows {
 			key := e.Name // reconciled member when matched, raw decode otherwise
 			pos, seen := mergedPos[key]

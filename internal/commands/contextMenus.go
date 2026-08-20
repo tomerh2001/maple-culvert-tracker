@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	apihelpers "github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 )
 
@@ -77,20 +78,22 @@ func submitScoresFromMessageWeek(s *discordgo.Session, i *discordgo.InteractionC
 	}
 
 	scores := map[string]int{}
-	parseWarnings, ok := scoresFromMessage(s, r, tenant, msg, scores)
+	pages, parseWarnings, ok := scoresFromMessage(s, r, tenant, msg, scores)
 	if !ok {
 		return
 	}
 
-	finalizeSubmitScores(s, r, i, scores, week, parseWarnings)
+	finalizeSubmitScores(s, r, i, scores, week, parseWarnings, pages)
 }
 
 // scoresFromMessage fills scores from a message: a pre-parsed .txt/.json
 // scores file when present, otherwise OCR of its image attachments (matched
 // against the tenant's roster). On failure it edits the (deferred)
 // interaction response itself and returns ok=false. On success, warnings
-// carries any non-fatal parse defects for the caller's receipt.
-func scoresFromMessage(s *discordgo.Session, r *reply, tenantID string, msg *discordgo.Message, scores map[string]int) (warnings string, ok bool) {
+// carries any non-fatal parse defects for the caller's receipt and pages the
+// parsed screenshots for the weekly archive (nil on the .txt/.json path -
+// there are no images to archive).
+func scoresFromMessage(s *discordgo.Session, r *reply, tenantID string, msg *discordgo.Message, scores map[string]int) (pages []apihelpers.ScreenshotPage, warnings string, ok bool) {
 	var scoresAttachment *discordgo.MessageAttachment
 	for _, a := range msg.Attachments {
 		if strings.HasSuffix(a.Filename, ".txt") || strings.HasSuffix(a.Filename, ".json") {
@@ -102,25 +105,25 @@ func scoresFromMessage(s *discordgo.Session, r *reply, tenantID string, msg *dis
 	if scoresAttachment != nil {
 		if scoresAttachment.Size > 2048*1024 {
 			r.Edit("Attachment size exceeds 2MB limit! Please upload a smaller file.")
-			return "", false
+			return nil, "", false
 		}
 		body, err := downloadBytes(scoresAttachment.URL)
 		if err != nil {
 			log.Println("scoresFromMessage: failed to download attachment:", err)
 			r.Edit("Failed to download the scores attachment! Please try again.")
-			return "", false
+			return nil, "", false
 		}
 		if err := json.Unmarshal(body, &scores); err != nil {
 			r.Edit("Failed to parse attachment content! Please ensure it's valid JSON format of { \"character-name\": 123, \"character-name-2\": 456 }.")
-			return "", false
+			return nil, "", false
 		}
-		return "", true
+		return nil, "", true
 	}
 
 	imageURLs := collectImageURLs(msg)
 	if len(imageURLs) == 0 {
 		r.editScreenshotFailure("No image or scores attachments found on the selected message.")
-		return "", false
+		return nil, "", false
 	}
 	return scoresFromImageURLs(r, tenantID, imageURLs, scores)
 }
@@ -129,8 +132,9 @@ func scoresFromMessage(s *discordgo.Session, r *reply, tenantID string, msg *dis
 // roster and fills scores. It is the shared core of the right-click Submit
 // Scores menu and the /submit-scores command: on failure it edits the
 // (deferred) interaction response and returns ok=false; on success warnings
-// carries any non-fatal parse defects for the caller's receipt.
-func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores map[string]int) (warnings string, ok bool) {
+// carries any non-fatal parse defects for the caller's receipt and pages the
+// parsed screenshots for the weekly archive.
+func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores map[string]int) (pages []apihelpers.ScreenshotPage, warnings string, ok bool) {
 	oc, err := ocrImagesToScores(tenantID, imageURLs)
 	if err != nil {
 		// Screenshot-fixable failures carry the requirements explainer and
@@ -143,25 +147,25 @@ func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores m
 		} else {
 			r.Edit(err.Error())
 		}
-		return "", false
+		return nil, "", false
 	}
 	// Submission safety gates: an incomplete (time-limited) or internally
 	// conflicting parse must never be written to the database.
 	if oc.truncated {
 		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again, or crop the screenshot to the Member Participation Status window and resubmit.")
-		return "", false
+		return nil, "", false
 	}
 	if len(oc.conflicts) > 0 {
 		r.Edit("Nothing submitted: the images disagree on some characters' scores:\n- " +
 			strings.Join(capList(oc.conflicts, 10), "\n- ") +
 			"\nRetake the overlapping screenshots and resubmit, or fix individual scores with `/set-culvert`.")
-		return "", false
+		return nil, "", false
 	}
 	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
 		r.Edit("Nothing submitted: parsed scores are not in descending order (`" +
 			oc.merged[idx-1].Name + "` -> `" + oc.merged[idx].Name +
 			"`), which usually means an OCR misread. Retake the screenshot and resubmit, or fix individual scores with `/set-culvert`.")
-		return "", false
+		return nil, "", false
 	}
 	// Names the game truncated with an ellipsis are recorded AS DECODED: an
 	// incomplete name beats a dropped score (owner decision). The receipt
@@ -195,5 +199,5 @@ func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores m
 			strings.Join(capList(ambiguousRecorded, 10), "; ") +
 			" - recorded as shown; set the right one with `/set-culvert`."
 	}
-	return warnings, true
+	return oc.pages, warnings, true
 }

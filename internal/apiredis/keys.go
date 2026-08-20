@@ -4,9 +4,14 @@ var (
 	CONF_DISCORD_ADMIN_CHANNEL_ID        = redisInternalKey{"CONF_DISCORD_ADMIN_CHANNEL_ID", EditableTypeDiscordChannel, false}
 	CONF_DISCORD_MEMBERS_MAIN_CHANNEL_ID = redisInternalKey{"CONF_DISCORD_MEMBERS_MAIN_CHANNEL_ID", EditableTypeDiscordChannel, false}
 	CONF_DISCORD_WEEKLY_CHANNEL_ID       = redisInternalKey{"CONF_DISCORD_WEEKLY_CHANNEL_ID", EditableTypeDiscordChannel, false}
-	CONF_DISCORD_GUILD_ROLE_IDS          = redisInternalKey{"CONF_DISCORD_GUILD_ROLE_IDS", EditableTypeDiscordRole, true}
-	CONF_DISCORD_SUBMIT_ROLE_IDS         = redisInternalKey{"CONF_DISCORD_SUBMIT_ROLE_IDS", EditableTypeDiscordRole, true}
-	CONF_DISCORD_SUBMIT_USER_IDS         = redisInternalKey{"CONF_DISCORD_SUBMIT_USER_IDS", EditableTypeString, true}
+	// CONF_DISCORD_SCREENSHOT_CHANNEL_ID is the optional per-guild channel
+	// where the bot keeps ONE message per culvert week collecting the score
+	// screenshots used for that week's submissions (newest version of each
+	// roster page, edited in place). Empty disables the archive.
+	CONF_DISCORD_SCREENSHOT_CHANNEL_ID = redisInternalKey{"CONF_DISCORD_SCREENSHOT_CHANNEL_ID", EditableTypeDiscordChannel, false}
+	CONF_DISCORD_GUILD_ROLE_IDS        = redisInternalKey{"CONF_DISCORD_GUILD_ROLE_IDS", EditableTypeDiscordRole, true}
+	CONF_DISCORD_SUBMIT_ROLE_IDS       = redisInternalKey{"CONF_DISCORD_SUBMIT_ROLE_IDS", EditableTypeDiscordRole, true}
+	CONF_DISCORD_SUBMIT_USER_IDS       = redisInternalKey{"CONF_DISCORD_SUBMIT_USER_IDS", EditableTypeString, true}
 
 	OPTIONAL_CONF_DISCORD_REMINDER_SUFFIX        = redisInternalKey{"OPTIONAL_CONF_DISCORD_REMINDER_SUFFIX", EditableTypeString, false}
 	OPTIONAL_CONF_MAPLE_REGION                   = redisInternalKey{"OPTIONAL_CONF_MAPLE_REGION", EditableTypeSelection, false} // default "na"
@@ -79,6 +84,7 @@ func init() {
 	KeysMap[CONF_DISCORD_ADMIN_CHANNEL_ID.Name] = CONF_DISCORD_ADMIN_CHANNEL_ID
 	KeysMap[CONF_DISCORD_MEMBERS_MAIN_CHANNEL_ID.Name] = CONF_DISCORD_MEMBERS_MAIN_CHANNEL_ID
 	KeysMap[CONF_DISCORD_WEEKLY_CHANNEL_ID.Name] = CONF_DISCORD_WEEKLY_CHANNEL_ID
+	KeysMap[CONF_DISCORD_SCREENSHOT_CHANNEL_ID.Name] = CONF_DISCORD_SCREENSHOT_CHANNEL_ID
 	KeysMap[CONF_DISCORD_GUILD_ROLE_IDS.Name] = CONF_DISCORD_GUILD_ROLE_IDS
 	KeysMap[CONF_DISCORD_SUBMIT_ROLE_IDS.Name] = CONF_DISCORD_SUBMIT_ROLE_IDS
 	KeysMap[CONF_DISCORD_SUBMIT_USER_IDS.Name] = CONF_DISCORD_SUBMIT_USER_IDS
