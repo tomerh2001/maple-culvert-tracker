@@ -25,8 +25,10 @@ import (
 // against the official rankings, plans the submission against the tracked
 // roster and existing week data (always overwriting existing scores),
 // auto-tracks unknown names, applies the changes and replies with an ephemeral
-// embed receipt matching the weekly embeds.
-func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, submitted map[string]int, week time.Time, parseWarnings string) {
+// embed receipt matching the weekly embeds. pages carries the parsed
+// screenshots for the weekly archive channel (nil when the submission had no
+// images, e.g. the .txt/.json path).
+func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.InteractionCreate, submitted map[string]int, week time.Time, parseWarnings string, pages []apihelpers.ScreenshotPage) {
 	if len(submitted) == 0 {
 		r.Edit("Nothing was parsed from that input - no changes were made.")
 		return
@@ -163,6 +165,12 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		}
 		desc.WriteString(announcementStatusLine(apihelpers.AnnounceSubmission(s, db.DB, apiredis.RedisDB, tenant, week, changedIDs)))
 	}
+	// The screenshot archive updates on EVERY screenshot submission, even a
+	// no-change resubmission: the images themselves are newer, and the
+	// freshest version of each page is exactly what the archive keeps.
+	if len(pages) > 0 {
+		desc.WriteString(archiveStatusLine(apihelpers.ArchiveWeekScreenshots(s, db.DB, apiredis.RedisDB, tenant, week, pages)))
+	}
 	desc.WriteString(parseWarnings)
 	desc.WriteString(rosterMeta.StalenessWarning())
 
@@ -227,6 +235,20 @@ func canonicalizeSubmittedWith(submitted map[string]int, tracked []trackedScore,
 }
 
 // announcementStatusLine renders the weekly-announcement outcome for a receipt.
+// archiveStatusLine renders the screenshot-archive outcome for the receipt.
+// An unconfigured archive is SILENT - it is an opt-in extra, not something to
+// nag every submission about (unlike the weekly channel).
+func archiveStatusLine(err error) string {
+	switch {
+	case err == nil:
+		return "\nScreenshot archive updated."
+	case errors.Is(err, apihelpers.ErrNoScreenshotChannel):
+		return ""
+	default:
+		return "\n:warning: Screenshot archive update failed: " + err.Error()
+	}
+}
+
 func announcementStatusLine(err error) string {
 	switch {
 	case err == nil:

@@ -51,6 +51,7 @@ func RunHealthChecks(s *discordgo.Session, tenantID string) []CheckResult {
 		checkGuildRoleConfig(s, tenantID),
 	}
 	out = append(out, checkWeeklyChannel(s, tenantID)...)
+	out = append(out, checkScreenshotChannel(s, tenantID)...)
 	out = append(out, checkSubmitterConfig(tenantID), checkCommandRegistration())
 	return out
 }
@@ -246,6 +247,75 @@ var weeklyRequiredPermissions = []struct {
 	{discordgo.PermissionAttachFiles, "Attach Files"},
 	{discordgo.PermissionCreatePublicThreads, "Create Public Threads"},
 	{discordgo.PermissionReadMessageHistory, "Read Message History"},
+}
+
+// screenshotRequiredPermissions is everything ArchiveWeekScreenshots needs in
+// the screenshot archive channel.
+var screenshotRequiredPermissions = []struct {
+	Bit  int64
+	Name string
+}{
+	{discordgo.PermissionViewChannel, "View Channel"},
+	{discordgo.PermissionSendMessages, "Send Messages"},
+	{discordgo.PermissionAttachFiles, "Attach Files"},
+}
+
+// checkScreenshotChannel verifies each configured screenshot archive
+// channel's permissions. Unconfigured guilds report nothing - the archive is
+// an opt-in extra, so its absence is not even a warning.
+func checkScreenshotChannel(s *discordgo.Session, tenantID string) []CheckResult {
+	primary := data.PrimaryGuildID()
+	inGuild := func(gid string) bool {
+		if g, err := s.State.Guild(gid); err == nil && g != nil {
+			return true
+		}
+		_, err := s.Guild(gid)
+		return err == nil
+	}
+	botID := ""
+	if s.State != nil && s.State.User != nil {
+		botID = s.State.User.ID
+	}
+
+	out := []CheckResult{}
+	for _, gid := range data.TenantGuildIDs(tenantID) {
+		if gid == "" {
+			continue
+		}
+		channelID := strings.TrimSpace(apiredis.CONF_DISCORD_SCREENSHOT_CHANNEL_ID.For(gid).GetWithDefault(apiredis.RedisDB, ""))
+		if channelID == "" {
+			continue
+		}
+		c := CheckResult{Name: "Screenshot channel"}
+		if gid != primary && !inGuild(gid) {
+			c.Status, c.Detail = CheckPass, "shared server "+gid+" pending an invite; its screenshot channel <#"+channelID+"> will be verified once I join"
+			out = append(out, c)
+			continue
+		}
+		perms, err := s.UserChannelPermissions(botID, channelID)
+		if err != nil {
+			c.Status, c.Detail = CheckFail, "cannot resolve my permissions in <#"+channelID+">: "+err.Error()
+			c.Fix = "Make sure the channel still exists and I can see it, or re-set it with `/config`"
+			out = append(out, c)
+			continue
+		}
+		missing := []string{}
+		for _, p := range screenshotRequiredPermissions {
+			if perms&p.Bit == 0 {
+				missing = append(missing, p.Name)
+			}
+		}
+		if len(missing) > 0 {
+			c.Status = CheckFail
+			c.Detail = "missing permission(s) in <#" + channelID + ">: " + strings.Join(missing, ", ")
+			c.Fix = "Grant the bot those permissions in the channel settings"
+			out = append(out, c)
+			continue
+		}
+		c.Status, c.Detail = CheckPass, "all required permissions in <#"+channelID+">"
+		out = append(out, c)
+	}
+	return out
 }
 
 // checkWeeklyChannel verifies the weekly announcement channel's permissions

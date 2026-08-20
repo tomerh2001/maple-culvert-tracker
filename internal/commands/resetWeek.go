@@ -96,5 +96,11 @@ func resetWeekCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if err := apihelpers.RefreshWeeklyAnnouncement(s, db.DB, apiredis.RedisDB, tenant, week); err != nil {
 		receipt += "\n:warning: Weekly announcement refresh failed: " + err.Error()
 	}
+	// The wiped scores' screenshots must not keep posing as the week's record:
+	// empty the archive message too (it stays, noting the reset, and the next
+	// submission refills it).
+	if err := apihelpers.ClearWeekScreenshots(s, db.DB, tenant, week); err != nil {
+		receipt += "\n:warning: Screenshot archive clear failed: " + err.Error()
+	}
 	r.Edit(receipt)
 }

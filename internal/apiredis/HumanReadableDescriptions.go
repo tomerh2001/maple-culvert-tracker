@@ -9,6 +9,7 @@ var confReadableNameAndDescriptions = map[redisInternalKey]HumanReadableDescript
 	CONF_DISCORD_ADMIN_CHANNEL_ID:                {"Discord Admin Channel ID", "REQUIRED The ID of the channel where the bot will send admin notifications"},
 	CONF_DISCORD_MEMBERS_MAIN_CHANNEL_ID:         {"Discord Members Main Channel ID", "REQUIRED The ID of the channel where the bot will interact with guild members"},
 	CONF_DISCORD_WEEKLY_CHANNEL_ID:               {"Discord Weekly Announcement Channel ID", "Channel for the one-message-per-week culvert table + its thread. Empty disables all announcements"},
+	CONF_DISCORD_SCREENSHOT_CHANNEL_ID:           {"Discord Screenshot Archive Channel ID", "Channel for one message per week collecting the score screenshots used (newest version of each page, edited in place). Empty disables the archive"},
 	CONF_DISCORD_GUILD_ROLE_IDS:                  {"Discord Guild Role IDs", "REQUIRED The IDs of guild members. Comma separated"},
 	OPTIONAL_CONF_DISCORD_REMINDER_SUFFIX:        {"Optional Discord Reminder Suffix", "Optional fluff suffix on the daily reminder message"},
 	OPTIONAL_CONF_MAPLE_REGION:                   {"Optional Maple Region", "Optional region of the server. Must be 'na' or 'eu', empty defaults to 'na'"},

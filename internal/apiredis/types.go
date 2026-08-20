@@ -41,7 +41,8 @@ func (k redisInternalKey) ToString() string {
 // thresholds) is tenant-shared, but a channel only exists inside one server:
 // two servers sharing one dataset each announce into their OWN channel.
 var perGuildKeyNames = map[string]bool{
-	"CONF_DISCORD_WEEKLY_CHANNEL_ID": true,
+	"CONF_DISCORD_WEEKLY_CHANNEL_ID":     true,
+	"CONF_DISCORD_SCREENSHOT_CHANNEL_ID": true,
 }
 
 // IsPerGuild reports whether this setting is scoped per invoking guild instead

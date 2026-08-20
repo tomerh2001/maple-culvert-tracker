@@ -23,7 +23,7 @@ import (
 // truncateSQL resets every table integration tests write to. RESTART IDENTITY
 // keeps generated ids deterministic across tests; CASCADE covers the
 // character_culvert_scores -> characters FK.
-const truncateSQL = `TRUNCATE characters, character_culvert_scores, weekly_announcements RESTART IDENTITY CASCADE`
+const truncateSQL = `TRUNCATE characters, character_culvert_scores, weekly_announcements, weekly_screenshot_archives, weekly_screenshot_pages RESTART IDENTITY CASCADE`
 
 // advisoryLockKey serializes DB tests ACROSS test binaries: `go test ./...`
 // runs packages in parallel, and every package's DB tests share the one
