@@ -258,6 +258,7 @@ var screenshotRequiredPermissions = []struct {
 	{discordgo.PermissionViewChannel, "View Channel"},
 	{discordgo.PermissionSendMessages, "Send Messages"},
 	{discordgo.PermissionAttachFiles, "Attach Files"},
+	{discordgo.PermissionReadMessageHistory, "Read Message History"},
 }
 
 // checkScreenshotChannel verifies each configured screenshot archive
