@@ -1,10 +1,9 @@
 package helpers
 
 // Integration tests for the screenshot archive's postgres layer against a
-// real database (see internal/db/testdb). The Discord half (message edits)
-// needs a live session and is exercised in production paths only; everything
-// the DB layer decides - record lookup, page replace vs insert, deletes,
-// guild scoping - is covered here.
+// real database (see internal/db/testdb). Discord message edits are covered by
+// screenshot_archive_discord_test.go using a fake HTTP transport; record lookup,
+// page replace vs insert, deletes, and guild scoping are covered here.
 
 import (
 	"testing"

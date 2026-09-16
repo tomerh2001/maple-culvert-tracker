@@ -250,9 +250,16 @@ func ClearWeekScreenshots(s *discordgo.Session, dbc *sql.DB, tenantID string, we
 			Content:     &content,
 			Attachments: &empty,
 		}); eerr != nil {
-			// The message is gone: drop the record so the next submission
-			// recreates it cleanly.
-			log.Println("ClearWeekScreenshots: edit failed, dropping record:", eerr)
+			if !isUnknownArchiveMessage(eerr) {
+				log.Println("ClearWeekScreenshots: edit failed, preserving record:", eerr)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("clearing the screenshot archive message failed: %w", eerr)
+				}
+				continue
+			}
+			// Discord confirmed the message was deleted, so the next
+			// submission can create a new one.
+			log.Println("ClearWeekScreenshots: message deleted, dropping record:", eerr)
 			if derr := deleteGuildScreenshotArchive(dbc, gid, weekStr); derr != nil && firstErr == nil {
 				firstErr = derr
 			}
@@ -330,28 +337,15 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 
 	var msg *discordgo.Message
 	if storedMessage != "" {
-		// The attachments array is authoritative on edit: it must name every
-		// attachment that exists AFTER the edit - survivors by their real id,
-		// the fresh uploads by their multipart index placeholder ({id: N} for
-		// files[N]) - anything unlisted is removed.
-		keep := make([]*discordgo.MessageAttachment, 0, len(survivors)+len(files))
-		for _, p := range survivors {
-			keep = append(keep, &discordgo.MessageAttachment{ID: p.attachmentID})
-		}
-		for i := range files {
-			keep = append(keep, &discordgo.MessageAttachment{ID: strconv.Itoa(i)})
-		}
-		msg, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-			Channel:     storedChannel,
-			ID:          storedMessage,
-			Content:     &content,
-			Attachments: &keep,
-			Files:       files,
-		})
+		msg, err = editScreenshotArchive(s, storedChannel, storedMessage, content, survivors, files)
 		if err != nil {
-			// The stored message is gone (deleted message/channel): drop the
-			// record and post fresh below - a submission may always create.
-			log.Println("screenshot archive: stored message unreachable, recreating:", err)
+			if !isUnknownArchiveMessage(err) {
+				return fmt.Errorf("updating the screenshot archive message failed: %w", err)
+			}
+			// Recreate only when Discord confirms that this message was
+			// deleted. Validation, permission and temporary failures must
+			// preserve the existing archive and its page identities.
+			log.Println("screenshot archive: stored message deleted, recreating:", err)
 			if derr := deleteGuildScreenshotArchive(dbc, guildID, weekStr); derr != nil {
 				return derr
 			}
@@ -424,6 +418,47 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 	return nil
 }
 
+// editScreenshotArchive keeps the original metadata for surviving attachments.
+// discordgo serializes Filename even when it is empty, so ID-only attachments
+// produce invalid filename fields in the edit payload (including new uploads).
+func editScreenshotArchive(s *discordgo.Session, channelID, messageID, content string, survivors []storedArchivePage, files []*discordgo.File) (*discordgo.Message, error) {
+	keep := make([]*discordgo.MessageAttachment, 0, len(survivors)+len(files))
+	if len(survivors) > 0 {
+		current, err := s.ChannelMessage(channelID, messageID)
+		if err != nil {
+			return nil, err
+		}
+		attachments := make(map[string]*discordgo.MessageAttachment, len(current.Attachments))
+		for _, attachment := range current.Attachments {
+			attachments[attachment.ID] = attachment
+		}
+		for _, p := range survivors {
+			attachment, ok := attachments[p.attachmentID]
+			if !ok || attachment.Filename == "" {
+				return nil, fmt.Errorf("stored screenshot attachment %s is missing or has no filename", p.attachmentID)
+			}
+			keep = append(keep, attachment)
+		}
+	}
+	// The array describes every attachment after the edit: survivors by
+	// Discord ID and new uploads by their multipart file index.
+	for i, file := range files {
+		keep = append(keep, &discordgo.MessageAttachment{ID: strconv.Itoa(i), Filename: file.Name})
+	}
+	return s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		Channel:     channelID,
+		ID:          messageID,
+		Content:     &content,
+		Attachments: &keep,
+		Files:       files,
+	})
+}
+
+func isUnknownArchiveMessage(err error) bool {
+	var restErr *discordgo.RESTError
+	return errors.As(err, &restErr) && restErr.Message != nil && restErr.Message.Code == discordgo.ErrCodeUnknownMessage
+}
+
 // loadGuildScreenshotArchive reads a guild's archive record and page rows for
 // a week. A missing record returns empty strings and no error.
 func loadGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string) (channelID, messageID string, pages []storedArchivePage, err error) {
@@ -488,7 +523,7 @@ func deleteArchivePageRows(dbc *sql.DB, guildID, weekStr string) error {
 }
 
 // deleteGuildScreenshotArchive removes a week's archive record and page rows
-// (the message itself is unreachable).
+// (Discord confirmed the message itself was deleted).
 func deleteGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string) error {
 	if err := deleteArchivePageRows(dbc, guildID, weekStr); err != nil {
 		return err
