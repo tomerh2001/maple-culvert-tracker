@@ -5,6 +5,21 @@ replaces the screenshot with the closest matching character names and retains
 the other pages. PostgreSQL stores the message ID, attachment IDs, and character
 names used for matching.
 
+The third row links to that guild's weekly announcement:
+`Weekly Message: https://discord.com/channels/<guild>/<channel>/<message>`.
+It uses the announcement's stored channel and message IDs, so it still works
+after the weekly channel setting changes. Guilds that share scores each link
+to their own announcement. If no announcement exists, the row is omitted.
+Screenshot submissions must announce the week before updating the archive so
+the first archive includes the new weekly message link.
+
+`RefreshWeekScreenshotLinks` updates existing archive links without changing
+their original update time or screenshots. It reads the message, changes only
+the link row, and skips messages whose link already matches. A content-only
+edit must omit `attachments` entirely; an empty attachment list removes them.
+Read or edit failures preserve the archive record and page mappings, including
+when Discord reports that the message was deleted.
+
 ## Discord attachment edits
 
 An edit's `attachments` array lists every attachment that should remain after

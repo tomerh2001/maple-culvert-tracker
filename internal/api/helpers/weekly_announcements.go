@@ -20,7 +20,7 @@ import (
 // non-failure.
 var ErrNoWeeklyChannel = errors.New("no weekly channel configured")
 
-// AnnounceSubmission is the only place the bot posts without being asked. It
+// AnnounceSubmission maintains the live weekly message after a submission. It
 // renders the week once from the tenant's shared data and posts it into EACH
 // guild in the tenant that has a weekly channel configured
 // (CONF_DISCORD_WEEKLY_CHANNEL_ID, per-guild) - so two servers sharing one

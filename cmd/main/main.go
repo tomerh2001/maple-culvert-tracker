@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -24,6 +25,9 @@ func main() {
 		log.Fatalf("Invalid bot parameters: %v", err)
 	}
 	commands.AddStartupWeeklyRefresh(api.DiscordSession)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	commands.AddWeeklyRecaps(ctx, api.DiscordSession)
 	err = api.DiscordSession.Open()
 	if err != nil {
 		log.Fatalf("Cannot open the session: %v", err)
@@ -42,6 +46,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	log.Println("Press Ctrl+C to exit")
 	<-stop
+	cancel()
 	if api.DiscordSession != nil {
 		err = api.DiscordSession.Close()
 		if err != nil {

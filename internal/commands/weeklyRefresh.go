@@ -60,5 +60,10 @@ func RefreshAllWeekly(s *discordgo.Session, guildIDs []string) {
 		if err := apihelpers.RefreshWeeklyAnnouncement(s, db.DB, apiredis.RedisDB, tenant, week); err != nil {
 			log.Printf("startup weekly refresh (tenant %s): %v", tenant, err)
 		}
+		for _, archiveWeek := range []time.Time{week, helpers.GetCulvertPreviousDate(week)} {
+			if err := apihelpers.RefreshWeekScreenshotLinks(s, db.DB, tenant, archiveWeek); err != nil {
+				log.Printf("startup screenshot link refresh (tenant %s, week %s): %v", tenant, archiveWeek.Format(time.DateOnly), err)
+			}
+		}
 	}
 }
