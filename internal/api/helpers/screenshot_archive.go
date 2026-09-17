@@ -211,99 +211,6 @@ func ArchiveWeekScreenshots(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client
 	return firstErr
 }
 
-// RefreshWeekScreenshotLinks adds or updates the weekly message link on
-// existing archives without changing their timestamps or attachments. Missing
-// weekly posts and missing archives are skipped; Discord errors never delete
-// their database records.
-func RefreshWeekScreenshotLinks(s *discordgo.Session, dbc *sql.DB, tenantID string, week time.Time) error {
-	if s == nil {
-		return errors.New("no discord session")
-	}
-	weekStr := cmdhelpers.GetCulvertResetDate(week).Format(time.DateOnly)
-	var firstErr error
-	for _, guildID := range data.TenantGuildIDs(tenantID) {
-		if guildID == "" {
-			continue
-		}
-		if err := refreshGuildScreenshotLink(s, dbc, guildID, weekStr); err != nil {
-			log.Println("RefreshWeekScreenshotLinks: guild", guildID, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
-}
-
-func refreshGuildScreenshotLink(s *discordgo.Session, dbc *sql.DB, guildID, weekStr string) error {
-	weeklyURL, err := screenshotWeeklyMessageURL(dbc, guildID, weekStr)
-	if err != nil || weeklyURL == "" {
-		return err
-	}
-	var channelID, messageID string
-	err = dbc.QueryRow(
-		`SELECT channel_id, message_id FROM weekly_screenshot_archives WHERE guild_id = $1 AND culvert_date = $2`,
-		guildID, weekStr).Scan(&channelID, &messageID)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("querying the screenshot archive record failed: %w", err)
-	}
-	msg, err := s.ChannelMessage(channelID, messageID)
-	if err != nil {
-		return fmt.Errorf("reading the screenshot archive message failed: %w", err)
-	}
-	content := withScreenshotWeeklyMessage(msg.Content, weeklyURL)
-	if content == msg.Content {
-		return nil
-	}
-	// Omit attachments entirely: a content-only edit preserves them in Discord.
-	_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-		Channel: channelID,
-		ID:      messageID,
-		Content: &content,
-		AllowedMentions: &discordgo.MessageAllowedMentions{
-			Parse: []discordgo.AllowedMentionType{},
-		},
-	})
-	return err
-}
-
-// Announcement records belong to the actual guild, even when several guilds
-// share a tenant. Its saved channel remains authoritative after config changes.
-func screenshotWeeklyMessageURL(dbc *sql.DB, guildID, weekStr string) (string, error) {
-	var channelID, messageID string
-	err := dbc.QueryRow(
-		`SELECT channel_id, message_id FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`,
-		guildID, weekStr).Scan(&channelID, &messageID)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("querying the weekly message link failed: %w", err)
-	}
-	if guildID == "" || channelID == "" || messageID == "" {
-		return "", nil
-	}
-	return fmt.Sprintf("https://discord.com/channels/%s/%s/%s", guildID, channelID, messageID), nil
-}
-
-func withScreenshotWeeklyMessage(content, weeklyURL string) string {
-	if weeklyURL == "" {
-		return content
-	}
-	line := "Weekly Message: " + weeklyURL
-	lines := strings.Split(content, "\n")
-	for i, existing := range lines {
-		if strings.HasPrefix(existing, "Weekly Message:") {
-			lines[i] = line
-			return strings.Join(lines, "\n")
-		}
-	}
-	return content + "\n" + line
-}
-
 // ClearWeekScreenshots empties every guild's archive message for the week -
 // the /reset-week companion: the wiped scores' screenshots must not keep
 // masquerading as the week's record. The message itself stays (noting the
@@ -335,15 +242,7 @@ func ClearWeekScreenshots(s *discordgo.Session, dbc *sql.DB, tenantID string, we
 		if messageID == "" {
 			continue // no archive message this week - nothing to clear
 		}
-		weeklyURL, lerr := screenshotWeeklyMessageURL(dbc, gid, weekStr)
-		if lerr != nil {
-			if firstErr == nil {
-				firstErr = lerr
-			}
-			continue
-		}
 		content := "**Culvert screenshots — week of " + weekStr + "**\nCleared by `/reset-week`."
-		content = withScreenshotWeeklyMessage(content, weeklyURL)
 		empty := []*discordgo.MessageAttachment{}
 		if _, eerr := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 			Channel:     channelID,
@@ -384,10 +283,6 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 	}
 	if storedMessage == "" && channelID == "" {
 		return ErrNoScreenshotChannel
-	}
-	weeklyURL, err := screenshotWeeklyMessageURL(dbc, guildID, weekStr)
-	if err != nil {
-		return err
 	}
 
 	existingNames := make([][]string, len(stored))
@@ -436,7 +331,6 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 	}
 	content := fmt.Sprintf("**Culvert screenshots — week of %s**\n%d page(s) · last updated <t:%d:f>",
 		weekStr, len(survivors)+len(pages), time.Now().Unix())
-	content = withScreenshotWeeklyMessage(content, weeklyURL)
 	if len(dropped) > 0 {
 		content += fmt.Sprintf("\n(%d older page(s) dropped - Discord allows %d attachments per message)", len(dropped), maxArchivePages)
 	}
@@ -465,7 +359,6 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 			storedMessage = ""
 			content = fmt.Sprintf("**Culvert screenshots — week of %s**\n%d page(s) · last updated <t:%d:f>",
 				weekStr, len(pages), time.Now().Unix())
-			content = withScreenshotWeeklyMessage(content, weeklyURL)
 			for i, p := range pages {
 				files[i].Reader = bytes.NewReader(p.Bytes) // the failed edit consumed the readers
 			}

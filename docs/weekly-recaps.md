@@ -4,7 +4,7 @@ At Thursday 00:00 UTC, the bot posts a new message titled
 **Culvert recap - Week of YYYY-MM-DD** in the same channel as the completed
 week's original announcement. It includes the same summary layout and a new
 thread containing the score table and personal bests. The original message
-and its screenshot archive link remain unchanged.
+and screenshot archive remain unchanged.
 
 This follows the in-game reset: 03:00 Thursday in Israel during summer time,
 02:00 during winter time. Week labels remain the Wednesday database keys;

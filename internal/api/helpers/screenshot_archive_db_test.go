@@ -6,7 +6,6 @@ package helpers
 // page replace vs insert, deletes, and guild scoping are covered here.
 
 import (
-	"database/sql"
 	"testing"
 	"time"
 
@@ -19,39 +18,6 @@ const (
 )
 
 const arcWeek = "2026-07-29"
-
-func seedArchiveWeeklyMessage(t *testing.T, dbc *sql.DB, guildID, week, channelID, messageID string) {
-	t.Helper()
-	if _, err := dbc.Exec(
-		`INSERT INTO weekly_announcements (guild_id, culvert_date, channel_id, message_id, thread_id) VALUES ($1, $2, $3, $4, '')`,
-		guildID, week, channelID, messageID); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestScreenshotArchiveWeeklyLinkGuildAndWeekScoped(t *testing.T) {
-	dbc := testdb.TestDB(t)
-	seedArchiveWeeklyMessage(t, dbc, arcGuildA, arcWeek, "weekly-a", "message-a")
-	seedArchiveWeeklyMessage(t, dbc, arcGuildB, arcWeek, "weekly-b", "message-b")
-	seedArchiveWeeklyMessage(t, dbc, arcGuildA, "2026-07-22", "old-channel", "old-message")
-	seedArchiveWeeklyMessage(t, dbc, arcGuildA, "2026-07-15", "", "incomplete-message")
-	for _, tc := range []struct {
-		guildID string
-		week    string
-		want    string
-	}{
-		{arcGuildA, arcWeek, "https://discord.com/channels/" + arcGuildA + "/weekly-a/message-a"},
-		{arcGuildB, arcWeek, "https://discord.com/channels/" + arcGuildB + "/weekly-b/message-b"},
-		{arcGuildA, "2026-07-22", "https://discord.com/channels/" + arcGuildA + "/old-channel/old-message"},
-		{arcGuildA, "2026-07-15", ""},
-		{arcGuildA, "2026-07-08", ""},
-	} {
-		got, err := screenshotWeeklyMessageURL(dbc, tc.guildID, tc.week)
-		if err != nil || got != tc.want {
-			t.Fatalf("weekly link for %s/%s = %q, %v; want %q", tc.guildID, tc.week, got, err, tc.want)
-		}
-	}
-}
 
 func TestScreenshotArchiveLoadMissing(t *testing.T) {
 	dbc := testdb.TestDB(t)
