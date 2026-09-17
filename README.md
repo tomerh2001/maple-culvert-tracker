@@ -8,7 +8,7 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 
 ## What it does
 
-- **Screenshot → scores in one step**: screenshot the in-game *Guild → Member Participation Status* window (full window is fine) and submit it either by right clicking the posted message → Apps → **Submit Scores**, or by attaching it to `/submit-scores`. The bot OCRs the table (no cropping needed, 1x/2x scale supported) and records everyone's weekly score. Unknown names are auto-tracked (canonicalized against the official rankings), and conflicting resubmissions ask you to resubmit within 10 minutes to confirm the overwrite.
+- **Screenshots → scores**: run `/submit-scores`, paste and send your screenshots in the same channel, then click **Submit**. Collect up to 10 screenshots across multiple messages. You can also right click an existing screenshot message → Apps → **Submit Scores**. The bot reads the in-game *Guild → Member Participation Status* table (full window is fine, no cropping needed, 1x/2x scale supported) and records everyone's weekly score. Unknown names are auto-tracked (canonicalized against the official rankings), and conflicting resubmissions ask you to resubmit within 10 minutes to confirm the overwrite.
 - **Screenshot history channel** (optional): point `Discord Screenshot Archive Channel ID` at a channel and the bot keeps one message per week there with the screenshots each submission was parsed from - a resubmitted page replaces its older version (matched by the names on it, not its position), so the message always shows the newest shot of every page.
 - **Live weekly announcement and closing recap**: in a designated channel the bot keeps a single SUMMARY message per culvert week (coverage, top scores, guild total), with the full ranked table as the first comment of its thread - both edited in place on every data change (submissions, registrations, corrections, resets) - plus submission notes and personal-best shoutouts that @mention the member. At the Thursday 00:00 UTC reset, a completed week with submissions gets one new **Culvert recap - Week of YYYY-MM-DD** message with the same summary and thread details. No recap is posted for an empty week. See [recap scheduling and retry behavior](docs/weekly-recaps.md).
 - **Members self-serve**: `/register` links a character to a Discord account, `/culvert` charts progression (yours, `name:@someone`, or any `name:SomeChar`) and stamps the chart with when those scores were last updated, right click a member → Apps → **Culvert** works too.
@@ -29,7 +29,7 @@ The entire surface — 13 slash commands, 2 context menus:
 | `/registered` | everyone | List every member who has linked a character |
 | `/culvert` | everyone | Progression chart: `name:` is a character or a `@mention` (default you); optional `from:`/`to:` dates |
 | `/culvert-all` | everyone | Weekly score-descending table (optional `date:`) |
-| `/submit-scores` | submitters | Submit weekly scores from screenshot(s) attached to the command (up to 5) |
+| `/submit-scores` | submitters | Start collecting up to 10 screenshots sent in the channel, then click Submit; optional `date:` or `message-link:` |
 | `/set-culvert` | submitters | Set one character's score for a week (unknown names auto-tracked) |
 | `/config` | admins | View/change all bot settings (`setting:` + `value:`) |
 | `/setup` | admins | Admin setup guide + live status |
@@ -40,6 +40,16 @@ The entire surface — 13 slash commands, 2 context menus:
 
 Date options accept `YYYY-MM-DD` or a Discord timestamp mention (`<t:123456>`).
 
+### Submitting screenshots
+
+1. Run `/submit-scores` in the channel where you want to post screenshots. Use `date:` if they belong to a different week.
+2. Paste and **send** screenshots as normal messages in that same channel, one at a time or together. The bot collects up to 10 images from your messages and updates the count in its private prompt.
+3. Click **Submit** in that prompt once all screenshots have been sent. The bot processes them together and returns a private receipt.
+
+Click **Cancel** to discard the pending batch. The collection session expires after 10 minutes. Only your screenshots in that server and channel are collected; nothing is processed until you click **Submit**. The prompt and receipt are visible only to you; screenshot messages are visible to everyone who can read the channel.
+
+For screenshots already posted, right click the message → Apps → **Submit Scores**, or run `/submit-scores message-link:` with its Discord message link. The message-link option submits that message immediately. Both approaches support the existing score validation and overwrite confirmation.
+
 ## Adding the bot to your server (admin quickstart)
 
 If someone already hosts this bot, you only need to invite it — no hosting required:
@@ -47,7 +57,7 @@ If someone already hosts this bot, you only need to invite it — no hosting req
 1. Invite the bot (ask the host for the invite link; it needs the `bot applications.commands` scopes).
 2. Type `/setup` — it walks you through the two-minute setup and shows your server's live status.
 3. Optionally `/config` a submitter role and a weekly announcement channel.
-4. Post a screenshot of the in-game *Guild → Member Participation Status* window and right click it → Apps → **Submit Scores**. Done.
+4. Run `/submit-scores`, paste and send screenshots of the in-game *Guild → Member Participation Status* window in that channel, then click **Submit**.
 
 Your server's data is private to your server: per-server characters, scores, settings, member rosters and announcements. Botched a submission run? `/reset-week` wipes the current week's scores (with a run-again-to-confirm guard).
 
@@ -55,12 +65,14 @@ Your server's data is private to your server: per-server characters, scores, set
 
 Images are published by CI to `ghcr.io/tomerh2001/maple-culvert-tracker/{bot,chartmaker,periodicredis,cron}:latest` on every push to `master`.
 
-1. Create a Discord application, add a bot, enable the **Server Members** intent, and invite it with permissions `137439267840` (scopes `bot applications.commands`).
+1. Create a Discord application, add a bot, enable the **Server Members** and **Message Content** intents, and invite it with permissions `137439267840` (scopes `bot applications.commands`).
 2. Copy `.env.template` to `.env` and fill it in (`DISCORD_TOKEN`, `DISCORD_GUILD_ID`, postgres/redis credentials, ...).
 3. `docker compose up -d` — the bot runs its own DB migrations on boot.
 4. In Discord: `/setup` walks you through roles, the weekly channel, and the first submission.
 
 Commands register globally on boot; any server that invites the bot is served, each with isolated data (tenant = the server, keyed by guild id in both postgres and redis).
+
+The **Message Content** intent must be enabled in the Discord Developer Portal before starting the bot. Discord requires it to deliver attachments from ordinary channel messages, including pasted screenshots. The bot requests this intent when it connects; enabling it in code alone is insufficient. Button interactions use a separate handler from application commands.
 
 ### Environment variables of note
 

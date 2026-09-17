@@ -61,6 +61,23 @@ const archiveMatchThreshold = 0.5
 // submission always wins).
 const maxArchivePages = 10
 
+const screenshotArchiveHeading = "**Culvert screenshots**\nWeek of %s"
+
+func screenshotArchiveContent(weekStr string, count, dropped int, updatedAt time.Time) string {
+	screenshotWord := "screenshots"
+	if count == 1 {
+		screenshotWord = "screenshot"
+	}
+	content := fmt.Sprintf(screenshotArchiveHeading+"\n%d %s\nUpdated <t:%d:f>",
+		weekStr, count, screenshotWord, updatedAt.Unix())
+	if dropped == 1 {
+		content += fmt.Sprintf("\nRemoved the oldest screenshot. Discord allows %d screenshots per message.", maxArchivePages)
+	} else if dropped > 1 {
+		content += fmt.Sprintf("\nRemoved the %d oldest screenshots. Discord allows %d screenshots per message.", dropped, maxArchivePages)
+	}
+	return content
+}
+
 // storedArchivePage is one weekly_screenshot_pages row: an attachment on the
 // week's archive message and the names identifying its page.
 type storedArchivePage struct {
@@ -242,7 +259,7 @@ func ClearWeekScreenshots(s *discordgo.Session, dbc *sql.DB, tenantID string, we
 		if messageID == "" {
 			continue // no archive message this week - nothing to clear
 		}
-		content := "**Culvert screenshots — week of " + weekStr + "**\nCleared by `/reset-week`."
+		content := fmt.Sprintf(screenshotArchiveHeading+"\nCleared by `/reset-week`.", weekStr)
 		empty := []*discordgo.MessageAttachment{}
 		if _, eerr := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 			Channel:     channelID,
@@ -329,11 +346,7 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 			Reader:      bytes.NewReader(p.Bytes),
 		}
 	}
-	content := fmt.Sprintf("**Culvert screenshots — week of %s**\n%d page(s) · last updated <t:%d:f>",
-		weekStr, len(survivors)+len(pages), time.Now().Unix())
-	if len(dropped) > 0 {
-		content += fmt.Sprintf("\n(%d older page(s) dropped - Discord allows %d attachments per message)", len(dropped), maxArchivePages)
-	}
+	content := screenshotArchiveContent(weekStr, len(survivors)+len(pages), len(dropped), time.Now())
 
 	var msg *discordgo.Message
 	if storedMessage != "" {
@@ -357,8 +370,7 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 				channelID = storedChannel
 			}
 			storedMessage = ""
-			content = fmt.Sprintf("**Culvert screenshots — week of %s**\n%d page(s) · last updated <t:%d:f>",
-				weekStr, len(pages), time.Now().Unix())
+			content = screenshotArchiveContent(weekStr, len(pages), 0, time.Now())
 			for i, p := range pages {
 				files[i].Reader = bytes.NewReader(p.Bytes) // the failed edit consumed the readers
 			}

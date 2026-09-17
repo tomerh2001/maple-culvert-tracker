@@ -129,7 +129,7 @@ func TestEditScreenshotArchiveFullReplacement(t *testing.T) {
 		return archiveMessageResponse(t, "msg", []*discordgo.MessageAttachment{{ID: "2000", Filename: filename}})
 	})
 	files := []*discordgo.File{{Name: "new-page.png", Reader: strings.NewReader("new screenshot")}}
-	if _, err := editScreenshotArchive(s, "chan", "msg", "1 page(s)", nil, files); err != nil {
+	if _, err := editScreenshotArchive(s, "chan", "msg", "1 screenshot", nil, files); err != nil {
 		t.Fatal(err)
 	}
 	if patches != 1 {
@@ -164,8 +164,8 @@ func TestScreenshotArchivePartialUpdateRetainsOtherPages(t *testing.T) {
 			if !reflect.DeepEqual(*edit.Attachments, want) {
 				t.Fatalf("edit attachments = %+v, want %+v", *edit.Attachments, want)
 			}
-			if edit.Content == nil || !strings.Contains(*edit.Content, "3 page(s)") {
-				t.Fatalf("incorrect page count in content: %v", edit.Content)
+			if edit.Content == nil || !strings.HasPrefix(*edit.Content, "**Culvert screenshots**\nWeek of "+arcWeek+"\n3 screenshots\nUpdated <t:") {
+				t.Fatalf("incorrect screenshot archive content: %v", edit.Content)
 			}
 			return archiveMessageResponse(t, "msg", []*discordgo.MessageAttachment{attachments[1], attachments[2], {ID: "2000", Filename: filename}})
 		default:
@@ -260,7 +260,7 @@ func TestScreenshotArchiveDeletedMessageRecreated(t *testing.T) {
 				}
 				posts++
 				edit, filename := archiveUpload(t, req)
-				if edit.Content == nil || !strings.Contains(*edit.Content, "1 page(s)") {
+				if edit.Content == nil || !strings.HasPrefix(*edit.Content, "**Culvert screenshots**\nWeek of "+arcWeek+"\n1 screenshot\nUpdated <t:") {
 					t.Fatalf("recreated content: %v", edit.Content)
 				}
 				return archiveMessageResponse(t, "new-msg", []*discordgo.MessageAttachment{{ID: "2000", Filename: filename}})
@@ -332,6 +332,9 @@ func TestClearScreenshotArchiveSuccessAndDeletedMessage(t *testing.T) {
 				}
 				if edit.Attachments == nil || len(*edit.Attachments) != 0 {
 					t.Fatalf("clear must send an explicit empty attachment list: %+v", edit.Attachments)
+				}
+				if edit.Content == nil || *edit.Content != "**Culvert screenshots**\nWeek of "+arcWeek+"\nCleared by `/reset-week`." {
+					t.Fatalf("incorrect cleared archive content: %v", edit.Content)
 				}
 				if deleted {
 					return archiveResponse(http.StatusNotFound, `{"code":10008,"message":"Unknown Message"}`)

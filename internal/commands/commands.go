@@ -110,38 +110,8 @@ var Commands = []*discordgo.ApplicationCommand{
 	// ── Submitters / admins ─────────────────────────────────────────────────
 	{
 		Name:        "submit-scores",
-		Description: "Submit weekly culvert scores from screenshot(s) attached to this command",
+		Description: "Start a screenshot submission, then paste and send images in this channel",
 		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionAttachment,
-				Name:        "screenshot",
-				Description: "A screenshot of the Guild - Member Participation Status window (or use message-link)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionAttachment,
-				Name:        "screenshot-2",
-				Description: "Another page of the roster (optional)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionAttachment,
-				Name:        "screenshot-3",
-				Description: "Another page of the roster (optional)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionAttachment,
-				Name:        "screenshot-4",
-				Description: "Another page of the roster (optional)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionAttachment,
-				Name:        "screenshot-5",
-				Description: "Another page of the roster (optional)",
-			},
 			{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
