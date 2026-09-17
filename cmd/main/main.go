@@ -28,6 +28,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	commands.AddWeeklyRecaps(ctx, api.DiscordSession)
+	commands.AddScreenshotSubmissions(ctx, api.DiscordSession)
 	err = api.DiscordSession.Open()
 	if err != nil {
 		log.Fatalf("Cannot open the session: %v", err)

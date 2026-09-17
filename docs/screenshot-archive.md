@@ -5,6 +5,21 @@ replaces the screenshot with the closest matching character names and retains
 the other pages. PostgreSQL stores the message ID, attachment IDs, and character
 names used for matching.
 
+The message puts the title, week, screenshot count, and update time on separate
+lines:
+
+```text
+**Culvert screenshots**
+Week of 2026-09-09
+4 screenshots
+Updated <t:1789528908:f>
+```
+
+Discord renders the timestamp in the reader's local time. A single screenshot
+uses `1 screenshot`. Creation, updates, and recreation after deletion share
+the same formatter. A reset keeps the title and week, followed by
+`Cleared by /reset-week.`
+
 ## Discord attachment edits
 
 A content-only edit must omit `attachments` entirely; an empty attachment

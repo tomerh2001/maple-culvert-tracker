@@ -33,7 +33,7 @@ Other character commands:
 Run ` + "`/culvert`" + ` to view your weekly Culvert scores and progress as a chart.
 
 **3) How scores are added** — :lock: admins & submitters only
-You never submit your own scores. An admin (or a member with the submitter role) posts a screenshot of the in-game Culvert rankings and the bot reads every score off it: right click the screenshot message → Apps → **Submit Scores**, or ` + "`/submit-scores`" + `.
+You never submit your own scores. An admin (or a member with the submitter role) runs ` + "`/submit-scores`" + `, pastes and sends screenshots in the same channel, then clicks **Submit**. The bot reads everyone's scores from up to 10 screenshots. Screenshots already posted can also be submitted by right clicking the message → Apps → **Submit Scores**.
 If one of your scores is missing or wrong, let an admin know - you can't add it yourself.
 
 **4) Weekly reset**
@@ -62,7 +62,13 @@ Also optional: ` + "`/config setting:Discord Screenshot Archive Channel ID value
 Members self-serve with ` + "`/register`" + ` (submitters can link anyone: ` + "`/register name:X user:@member`" + `). Submitting scores auto-tracks unknown names automatically, so a first screenshot submission builds the roster for you. ` + "`/unregister`" + ` handles leavers (history is kept).
 
 **4. Submit scores weekly**
-Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine). Submit it either way: right click the posted message -> Apps -> **Submit Scores**, or attach it to ` + "`/submit-scores`" + ` (up to 5 screenshots for a long roster).
+Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine).
+1. Run ` + "`/submit-scores`" + `.
+2. Paste and **send** screenshots as normal messages in the same channel. Repeat for every page, up to 10 screenshots.
+3. Click **Submit** in the bot's private prompt to process the batch.
+
+The session lasts 10 minutes; **Cancel** discards the pending batch. The bot only collects screenshots you send in that server and channel. Screenshot messages remain visible in the channel; the prompt and receipt are private.
+For screenshots already posted, right click the message -> Apps -> **Submit Scores**, or use ` + "`/submit-scores message-link:`" + `. Add ` + "`date:`" + ` to submit for a different week.
 - Scores land on the current culvert week (it rolls over weekly)
 - If some scores already exist with different values, nothing is written: the bot shows the conflicts and asks you to submit the same screenshots again within 10 minutes to confirm the overwrite
 - Single fixes (typos, missed rows, past weeks): ` + "`/set-culvert name:X score:123 date:YYYY-MM-DD`" + `

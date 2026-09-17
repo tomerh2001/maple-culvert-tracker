@@ -46,7 +46,13 @@ func CreateBotSessionWithCommands(commands []*discordgo.ApplicationCommand, comm
 	if err != nil {
 		return nil, err
 	}
+	// Screenshot collection reads attachments from normal channel messages.
+	// The application must also enable Message Content in the Developer Portal.
+	s.Identify.Intents |= discordgo.IntentMessageContent
 	s.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		if i.Type != discordgo.InteractionApplicationCommand {
+			return
+		}
 		name := i.ApplicationCommandData().Name
 		h, ok := commandHandlers[name]
 		if !ok {
