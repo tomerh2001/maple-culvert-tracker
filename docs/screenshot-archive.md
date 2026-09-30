@@ -1,9 +1,11 @@
 # Weekly screenshot archive updates
 
-Each guild has one archive message per culvert week. A partial submission
+Each guild has up to two archive messages per culvert week, with at most 10
+images per message and 20 images in total. A partial submission
 replaces the screenshot with the closest matching character names and retains
-the other pages. PostgreSQL stores the message ID, attachment IDs, and character
-names used for matching.
+the other pages. PostgreSQL stores each archive part, its message ID, attachment
+IDs, and the character names used for matching. Matching spans both parts, so a replacement
+updates the correct message even when the submitted page order changes.
 
 The message puts the title, week, screenshot count, and update time on separate
 lines:
@@ -19,6 +21,18 @@ Discord renders the timestamp in the reader's local time. A single screenshot
 uses `1 screenshot`. Creation, updates, and recreation after deletion share
 the same formatter. A reset keeps the title and week, followed by
 `Cleared by /reset-week.`
+
+## Twenty-image batches
+
+A submission can contain up to 20 images. The archive splits them into messages
+without requiring the submitter to divide the batch. Existing archives keep
+their current message and page records as the first part when the database
+migration runs. A reset clears both parts.
+
+If new coverage would take the weekly archive beyond 20 images, the oldest
+stored pages are removed first; new submitted images take priority. A failed
+update preserves the affected part's stored references. Only a confirmed
+Discord `Unknown Message` response permits that part to be recreated.
 
 ## Discord attachment edits
 
