@@ -110,8 +110,68 @@ var Commands = []*discordgo.ApplicationCommand{
 	// ── Submitters / admins ─────────────────────────────────────────────────
 	{
 		Name:        "submit-scores",
-		Description: "Start a screenshot submission, then paste and send images in this channel",
+		Description: "Submit weekly culvert scores from screenshot(s) attached to this command",
 		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-1",
+				Description: "A screenshot of the Guild - Member Participation Status window (or use message-link)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-2",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-3",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-4",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-5",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-6",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-7",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-8",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-9",
+				Description: "Another page of the roster (optional)",
+			},
+			{
+				Required:    false,
+				Type:        discordgo.ApplicationCommandOptionAttachment,
+				Name:        "screenshot-10",
+				Description: "Another page of the roster (optional)",
+			},
 			{
 				Required:    false,
 				Type:        discordgo.ApplicationCommandOptionString,
