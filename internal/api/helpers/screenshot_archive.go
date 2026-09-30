@@ -1,14 +1,14 @@
 package helpers
 
-// The weekly screenshot archive: one bot message per (guild, culvert week) in
+// The weekly screenshot archive: up to two bot messages per (guild, culvert week) in
 // an optional channel (CONF_DISCORD_SCREENSHOT_CHANNEL_ID), collecting the
 // screenshots each submission was parsed from - a browsable history of the
 // raw inputs behind the recorded scores.
 //
-// The message is created on the week's first screenshot submission and EDITED
-// in place afterwards, like the weekly announcement. Its attachments are the
+// Messages are created as the week's archive grows and edited in place
+// afterwards, like the weekly announcement. Their attachments are the
 // image store; weekly_screenshot_archives / weekly_screenshot_pages
-// (db_migrations/9) track the message and which roster "page" each attachment
+// (db_migrations/9 and 11) track each message and which roster "page" each attachment
 // covers. A page's identity is the set of character names parsed from it:
 // when a later submission re-shoots a page (same members, fresher scores),
 // the new image REPLACES the stored one instead of piling up - only the most
@@ -56,10 +56,11 @@ type ScreenshotPage struct {
 // a genuinely new page (mostly unseen names) stays below it.
 const archiveMatchThreshold = 0.5
 
-// maxArchivePages is Discord's attachments-per-message cap. When kept + new
-// pages would exceed it, the OLDEST stored pages are dropped first (the new
-// submission always wins).
-const maxArchivePages = 10
+// Discord allows ten attachments per message. Two archive parts retain up to
+// twenty pages; newer submissions replace the oldest unmatched pages at capacity.
+const archivePagesPerMessage = 10
+const maxArchiveParts = 2
+const maxArchivePages = archivePagesPerMessage * maxArchiveParts
 
 const screenshotArchiveHeading = "**Culvert screenshots**\nWeek of %s"
 
@@ -71,9 +72,9 @@ func screenshotArchiveContent(weekStr string, count, dropped int, updatedAt time
 	content := fmt.Sprintf(screenshotArchiveHeading+"\n%d %s\nUpdated <t:%d:f>",
 		weekStr, count, screenshotWord, updatedAt.Unix())
 	if dropped == 1 {
-		content += fmt.Sprintf("\nRemoved the oldest screenshot. Discord allows %d screenshots per message.", maxArchivePages)
+		content += fmt.Sprintf("\nRemoved the oldest screenshot. The weekly archive keeps the latest %d screenshots.", maxArchivePages)
 	} else if dropped > 1 {
-		content += fmt.Sprintf("\nRemoved the %d oldest screenshots. Discord allows %d screenshots per message.", dropped, maxArchivePages)
+		content += fmt.Sprintf("\nRemoved the %d oldest screenshots. The weekly archive keeps the latest %d screenshots.", dropped, maxArchivePages)
 	}
 	return content
 }
@@ -190,7 +191,7 @@ func ArchiveWeekScreenshots(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client
 		return nil
 	}
 	if len(pages) > maxArchivePages {
-		pages = pages[:maxArchivePages]
+		return fmt.Errorf("a screenshot submission exceeds the %d-page archive limit", maxArchivePages)
 	}
 	weekStr := cmdhelpers.GetCulvertResetDate(week).Format(time.DateOnly)
 
@@ -228,7 +229,7 @@ func ArchiveWeekScreenshots(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client
 	return firstErr
 }
 
-// ClearWeekScreenshots empties every guild's archive message for the week -
+// ClearWeekScreenshots empties every guild's archive messages for the week -
 // the /reset-week companion: the wiped scores' screenshots must not keep
 // masquerading as the week's record. The message itself stays (noting the
 // reset) so the next submission reuses it. Guilds without an archive message
@@ -249,59 +250,94 @@ func ClearWeekScreenshots(s *discordgo.Session, dbc *sql.DB, tenantID string, we
 		if gid == "" {
 			continue
 		}
-		channelID, messageID, _, lerr := loadGuildScreenshotArchive(dbc, gid, weekStr)
-		if lerr != nil {
-			if firstErr == nil {
-				firstErr = lerr
-			}
-			continue
-		}
-		if messageID == "" {
-			continue // no archive message this week - nothing to clear
-		}
-		content := fmt.Sprintf(screenshotArchiveHeading+"\nCleared by `/reset-week`.", weekStr)
-		empty := []*discordgo.MessageAttachment{}
-		if _, eerr := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-			Channel:     channelID,
-			ID:          messageID,
-			Content:     &content,
-			Attachments: &empty,
-		}); eerr != nil {
-			if !isUnknownArchiveMessage(eerr) {
-				log.Println("ClearWeekScreenshots: edit failed, preserving record:", eerr)
+		for part := 0; part < maxArchiveParts; part++ {
+			channelID, messageID, _, lerr := loadGuildScreenshotArchive(dbc, gid, weekStr, part)
+			if lerr != nil {
 				if firstErr == nil {
-					firstErr = fmt.Errorf("clearing the screenshot archive message failed: %w", eerr)
+					firstErr = lerr
 				}
 				continue
 			}
-			// Discord confirmed the message was deleted, so the next
-			// submission can create a new one.
-			log.Println("ClearWeekScreenshots: message deleted, dropping record:", eerr)
-			if derr := deleteGuildScreenshotArchive(dbc, gid, weekStr); derr != nil && firstErr == nil {
+			if messageID == "" {
+				continue // no archive message this week - nothing to clear
+			}
+			content := fmt.Sprintf(screenshotArchiveHeading+"\nCleared by `/reset-week`.", weekStr)
+			if part > 0 {
+				content += fmt.Sprintf("\nPart %d", part+1)
+			}
+			empty := []*discordgo.MessageAttachment{}
+			if _, eerr := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				Channel:     channelID,
+				ID:          messageID,
+				Content:     &content,
+				Attachments: &empty,
+			}); eerr != nil {
+				if !isUnknownArchiveMessage(eerr) {
+					log.Println("ClearWeekScreenshots: edit failed, preserving record:", eerr)
+					if firstErr == nil {
+						firstErr = fmt.Errorf("clearing the screenshot archive message failed: %w", eerr)
+					}
+					continue
+				}
+				// Discord confirmed the message was deleted, so the next
+				// submission can create a new one.
+				log.Println("ClearWeekScreenshots: message deleted, dropping record:", eerr)
+				if derr := deleteGuildScreenshotArchive(dbc, gid, weekStr, part); derr != nil && firstErr == nil {
+					firstErr = derr
+				}
+				continue
+			}
+			if derr := deleteArchivePageRows(dbc, gid, weekStr, part); derr != nil && firstErr == nil {
 				firstErr = derr
 			}
-			continue
-		}
-		if derr := deleteArchivePageRows(dbc, gid, weekStr); derr != nil && firstErr == nil {
-			firstErr = derr
 		}
 	}
 	return firstErr
 }
 
-// upsertGuildScreenshotArchive merges the submitted pages into one guild's
-// weekly archive message: surviving attachments are kept by id, replaced and
-// new pages are uploaded fresh, and the page rows are rewritten to match what
-// the message now shows.
+// archivePartUpdate holds one message's planned changes. Matching is global,
+// but surviving attachments stay in their original message and never need to
+// be downloaded or moved when a different part changes.
+type archivePartUpdate struct {
+	part           int
+	channelID      string
+	messageID      string
+	showPart       bool
+	survivors      []storedArchivePage
+	dropped        []storedArchivePage
+	pages          []ScreenshotPage
+	replacementIDs []int64
+}
+
+// upsertGuildScreenshotArchive matches all pages across the week's two parts,
+// retains at most twenty pages, then updates each affected Discord message.
+// Each successful part is saved independently; a failed part keeps its prior
+// database references and is reported to the submitter.
 func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, channelID, weekStr string, pages []ScreenshotPage) error {
-	storedChannel, storedMessage, stored, err := loadGuildScreenshotArchive(dbc, guildID, weekStr)
-	if err != nil {
-		return err
+	if len(pages) > maxArchivePages {
+		return fmt.Errorf("a screenshot submission exceeds the %d-page archive limit", maxArchivePages)
 	}
-	if storedMessage == "" && channelID == "" {
+	parts := make([]archivePartUpdate, maxArchiveParts)
+	var stored []storedArchivePage
+	var pageParts []int
+	for part := range parts {
+		storedChannel, storedMessage, rows, err := loadGuildScreenshotArchive(dbc, guildID, weekStr, part)
+		if err != nil {
+			return err
+		}
+		parts[part] = archivePartUpdate{part: part, channelID: storedChannel, messageID: storedMessage}
+		stored = append(stored, rows...)
+		for range rows {
+			pageParts = append(pageParts, part)
+		}
+		// Clearing channel configuration does not detach an existing archive.
+		if channelID == "" && storedChannel != "" {
+			channelID = storedChannel
+		}
+	}
+	if channelID == "" {
 		return ErrNoScreenshotChannel
 	}
-
 	existingNames := make([][]string, len(stored))
 	for i, p := range stored {
 		existingNames[i] = p.names
@@ -311,123 +347,157 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 		incomingNames[i] = p.Names
 	}
 	plan := PlanArchiveMerge(existingNames, incomingNames)
-
-	// Survivors = stored pages no incoming page replaces; oldest are dropped
-	// first if the attachment cap would overflow.
-	replaced := map[int]bool{}
+	replaced := make(map[int]bool)
 	for _, ex := range plan {
 		if ex >= 0 {
 			replaced[ex] = true
 		}
 	}
-	survivors := []storedArchivePage{}
-	for i, p := range stored {
+	var survivors []int
+	for i := range stored {
 		if !replaced[i] {
-			survivors = append(survivors, p)
+			survivors = append(survivors, i)
 		}
 	}
 	sort.SliceStable(survivors, func(a, b int) bool {
-		return survivors[a].updatedAt.Before(survivors[b].updatedAt)
+		x, y := stored[survivors[a]], stored[survivors[b]]
+		if x.updatedAt.Equal(y.updatedAt) {
+			return x.id < y.id
+		}
+		return x.updatedAt.Before(y.updatedAt)
 	})
-	dropped := []storedArchivePage{}
-	if over := len(survivors) + len(pages) - maxArchivePages; over > 0 {
-		dropped, survivors = survivors[:over], survivors[over:]
-	}
-
-	// Upload names are matched against the response to learn each new
-	// attachment's id; the page index keys them within this one edit.
-	files := make([]*discordgo.File, len(pages))
-	uploadNames := make([]string, len(pages))
-	for i, p := range pages {
-		uploadNames[i] = fmt.Sprintf("culvert-%s-page-%d-%d%s", weekStr, i+1, time.Now().UnixMilli(), imageExtension(p.Bytes))
-		files[i] = &discordgo.File{
-			Name:        uploadNames[i],
-			ContentType: http.DetectContentType(p.Bytes),
-			Reader:      bytes.NewReader(p.Bytes),
+	dropCount := len(survivors) + len(pages) - maxArchivePages
+	for n, ex := range survivors {
+		part := &parts[pageParts[ex]]
+		if n < dropCount {
+			part.dropped = append(part.dropped, stored[ex])
+		} else {
+			part.survivors = append(part.survivors, stored[ex])
 		}
 	}
-	content := screenshotArchiveContent(weekStr, len(survivors)+len(pages), len(dropped), time.Now())
+	// Replacements keep their part. Reserve those slots before allocating new
+	// pages so a fresh page cannot displace a matched one into another message.
+	counts := make([]int, maxArchiveParts)
+	for p := range parts {
+		counts[p] = len(parts[p].survivors)
+	}
+	for _, ex := range plan {
+		if ex >= 0 {
+			counts[pageParts[ex]]++
+		}
+	}
+	for i, page := range pages {
+		part, pageID := 0, int64(0)
+		if ex := plan[i]; ex >= 0 {
+			part, pageID = pageParts[ex], stored[ex].id
+		} else {
+			for part < maxArchiveParts && counts[part] >= archivePagesPerMessage {
+				part++
+			}
+			if part == maxArchiveParts {
+				return errors.New("screenshot archive capacity planning failed")
+			}
+			counts[part]++
+		}
+		parts[part].pages = append(parts[part].pages, page)
+		parts[part].replacementIDs = append(parts[part].replacementIDs, pageID)
+	}
+	for n := range parts {
+		parts[n].showPart = counts[1] > 0
+	}
+	var firstErr error
+	for _, part := range parts {
+		if len(part.pages) == 0 && len(part.dropped) == 0 {
+			continue
+		}
+		if err := upsertGuildScreenshotArchivePart(s, dbc, guildID, channelID, weekStr, part); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("archive part %d: %w", part.part+1, err)
+		}
+	}
+	return firstErr
+}
 
+func upsertGuildScreenshotArchivePart(s *discordgo.Session, dbc *sql.DB, guildID, channelID, weekStr string, part archivePartUpdate) error {
+	files := make([]*discordgo.File, len(part.pages))
+	uploadNames := make([]string, len(part.pages))
+	for i, p := range part.pages {
+		uploadNames[i] = fmt.Sprintf("culvert-%s-part-%d-page-%d-%d%s", weekStr, part.part+1, i+1, time.Now().UnixMilli(), imageExtension(p.Bytes))
+		files[i] = &discordgo.File{Name: uploadNames[i], ContentType: http.DetectContentType(p.Bytes), Reader: bytes.NewReader(p.Bytes)}
+	}
+	content := screenshotArchiveContent(weekStr, len(part.survivors)+len(part.pages), len(part.dropped), time.Now())
+	if part.showPart {
+		content += fmt.Sprintf("\nPart %d", part.part+1)
+	}
 	var msg *discordgo.Message
-	if storedMessage != "" {
-		msg, err = editScreenshotArchive(s, storedChannel, storedMessage, content, survivors, files)
+	var err error
+	if part.messageID != "" {
+		msg, err = editScreenshotArchive(s, part.channelID, part.messageID, content, part.survivors, files)
 		if err != nil {
 			if !isUnknownArchiveMessage(err) {
 				return fmt.Errorf("updating the screenshot archive message failed: %w", err)
 			}
-			// Recreate only when Discord confirms that this message was
-			// deleted. Validation, permission and temporary failures must
-			// preserve the existing archive and its page identities.
-			log.Println("screenshot archive: stored message deleted, recreating:", err)
-			if derr := deleteGuildScreenshotArchive(dbc, guildID, weekStr); derr != nil {
-				return derr
+			// Only this deleted part loses its page identities. Other parts and
+			// their attachments remain tracked even when recreation fails.
+			if err := deleteGuildScreenshotArchive(dbc, guildID, weekStr, part.part); err != nil {
+				return err
 			}
-			stored, survivors, dropped = nil, nil, nil
-			for i := range plan {
-				plan[i] = -1
+			part.survivors, part.dropped = nil, nil
+			for i := range part.replacementIDs {
+				part.replacementIDs[i] = 0
 			}
-			if channelID == "" {
-				channelID = storedChannel
+			channelID = part.channelID
+			part.messageID = ""
+			content = screenshotArchiveContent(weekStr, len(part.pages), 0, time.Now())
+			if part.showPart {
+				content += fmt.Sprintf("\nPart %d", part.part+1)
 			}
-			storedMessage = ""
-			content = screenshotArchiveContent(weekStr, len(pages), 0, time.Now())
-			for i, p := range pages {
-				files[i].Reader = bytes.NewReader(p.Bytes) // the failed edit consumed the readers
+			for i, p := range part.pages {
+				files[i].Reader = bytes.NewReader(p.Bytes)
 			}
 		}
 	}
-	if storedMessage == "" {
-		msg, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-			Content: content,
-			Files:   files,
-		})
+	if part.messageID == "" {
+		msg, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: content, Files: files})
 		if err != nil {
-			log.Println("screenshot archive: send failed:", err)
-			return errors.New("posting the screenshot archive message failed - check the bot's permissions in the archive channel")
+			return fmt.Errorf("posting the screenshot archive message failed: %w", err)
 		}
-		if _, err := dbc.Exec(
-			`INSERT INTO weekly_screenshot_archives (guild_id, culvert_date, channel_id, message_id) VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (guild_id, culvert_date) DO UPDATE SET channel_id = $3, message_id = $4`,
-			guildID, weekStr, channelID, msg.ID); err != nil {
-			log.Println("screenshot archive: insert record:", err)
+		part.channelID = channelID
+	}
+	if msg == nil {
+		return errors.New("Discord returned no screenshot archive message")
+	}
+	// Validate every upload before persisting the returned message and page
+	// identities. Database failures must reach the receipt, never claim success.
+	newAttachmentIDs := make(map[string]string)
+	for _, a := range msg.Attachments {
+		newAttachmentIDs[a.Filename] = a.ID
+	}
+	for _, name := range uploadNames {
+		if newAttachmentIDs[name] == "" {
+			return fmt.Errorf("uploaded screenshot %s is missing from Discord's response", name)
 		}
 	}
-
-	// Resolve the fresh uploads' attachment ids from the response and rewrite
-	// the page rows: replaced rows are updated in place, new pages inserted,
-	// cap-dropped rows deleted.
-	newAttachmentIDs := map[string]string{} // upload filename -> attachment id
-	keptIDs := map[string]bool{}
-	for _, p := range survivors {
-		keptIDs[p.attachmentID] = true
+	tx, err := dbc.Begin()
+	if err != nil {
+		return err
 	}
-	if msg != nil {
-		for _, a := range msg.Attachments {
-			if !keptIDs[a.ID] {
-				newAttachmentIDs[a.Filename] = a.ID
-			}
-		}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO weekly_screenshot_archives (guild_id, culvert_date, archive_part, channel_id, message_id)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (guild_id, culvert_date, archive_part)
+		DO UPDATE SET channel_id = $4, message_id = $5`, guildID, weekStr, part.part, part.channelID, msg.ID); err != nil {
+		return err
 	}
-	for i := range pages {
-		attachmentID, ok := newAttachmentIDs[uploadNames[i]]
-		if !ok {
-			log.Println("screenshot archive: uploaded page missing from response:", uploadNames[i])
-			continue
-		}
-		pageID := int64(0)
-		if ex := plan[i]; ex >= 0 {
-			pageID = stored[ex].id
-		}
-		if err := saveArchivePage(dbc, guildID, weekStr, pageID, attachmentID, pages[i].Names); err != nil {
-			log.Println("screenshot archive: save page row:", err)
+	for i, p := range part.pages {
+		if err := saveArchivePage(tx, guildID, weekStr, part.part, part.replacementIDs[i], newAttachmentIDs[uploadNames[i]], p.Names); err != nil {
+			return err
 		}
 	}
-	for _, p := range dropped {
-		if err := deleteArchivePageByID(dbc, p.id); err != nil {
-			log.Println("screenshot archive: delete dropped page row:", err)
+	for _, p := range part.dropped {
+		if err := deleteArchivePageByID(tx, p.id); err != nil {
+			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // editScreenshotArchive keeps the original metadata for surviving attachments.
@@ -471,12 +541,12 @@ func isUnknownArchiveMessage(err error) bool {
 	return errors.As(err, &restErr) && restErr.Message != nil && restErr.Message.Code == discordgo.ErrCodeUnknownMessage
 }
 
-// loadGuildScreenshotArchive reads a guild's archive record and page rows for
-// a week. A missing record returns empty strings and no error.
-func loadGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string) (channelID, messageID string, pages []storedArchivePage, err error) {
+// loadGuildScreenshotArchive reads one part's message and page rows for a
+// guild and week. A missing record returns empty strings and no error.
+func loadGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string, part int) (channelID, messageID string, pages []storedArchivePage, err error) {
 	err = dbc.QueryRow(
-		`SELECT channel_id, message_id FROM weekly_screenshot_archives WHERE guild_id = $1 AND culvert_date = $2`,
-		guildID, weekStr).Scan(&channelID, &messageID)
+		`SELECT channel_id, message_id FROM weekly_screenshot_archives WHERE guild_id = $1 AND culvert_date = $2 AND archive_part = $3`,
+		guildID, weekStr, part).Scan(&channelID, &messageID)
 	if err == sql.ErrNoRows {
 		return "", "", nil, nil
 	}
@@ -485,8 +555,8 @@ func loadGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string) (channelID
 		return "", "", nil, errors.New("querying the screenshot archive record failed (see server logs)")
 	}
 	rows, err := dbc.Query(
-		`SELECT id, attachment_id, names, updated_at FROM weekly_screenshot_pages WHERE guild_id = $1 AND culvert_date = $2 ORDER BY updated_at, id`,
-		guildID, weekStr)
+		`SELECT id, attachment_id, names, updated_at FROM weekly_screenshot_pages WHERE guild_id = $1 AND culvert_date = $2 AND archive_part = $3 ORDER BY updated_at, id`,
+		guildID, weekStr, part)
 	if err != nil {
 		log.Println("screenshot archive: query pages:", err)
 		return "", "", nil, errors.New("querying the screenshot archive pages failed (see server logs)")
@@ -505,13 +575,17 @@ func loadGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string) (channelID
 	return channelID, messageID, pages, rows.Err()
 }
 
+type archiveDBExecutor interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
 // saveArchivePage writes one page row: pageID 0 inserts a new page, otherwise
 // the existing row is re-pointed at the fresh attachment (a replaced page).
-func saveArchivePage(dbc *sql.DB, guildID, weekStr string, pageID int64, attachmentID string, names []string) error {
+func saveArchivePage(dbc archiveDBExecutor, guildID, weekStr string, part int, pageID int64, attachmentID string, names []string) error {
 	if pageID == 0 {
 		_, err := dbc.Exec(
-			`INSERT INTO weekly_screenshot_pages (guild_id, culvert_date, attachment_id, names) VALUES ($1, $2, $3, $4)`,
-			guildID, weekStr, attachmentID, encodeArchiveNames(names))
+			`INSERT INTO weekly_screenshot_pages (guild_id, culvert_date, archive_part, attachment_id, names) VALUES ($1, $2, $3, $4, $5)`,
+			guildID, weekStr, part, attachmentID, encodeArchiveNames(names))
 		return err
 	}
 	_, err := dbc.Exec(
@@ -522,25 +596,25 @@ func saveArchivePage(dbc *sql.DB, guildID, weekStr string, pageID int64, attachm
 
 // deleteArchivePageByID removes one page row (its attachment was dropped from
 // the message).
-func deleteArchivePageByID(dbc *sql.DB, id int64) error {
+func deleteArchivePageByID(dbc archiveDBExecutor, id int64) error {
 	_, err := dbc.Exec(`DELETE FROM weekly_screenshot_pages WHERE id = $1`, id)
 	return err
 }
 
-// deleteArchivePageRows removes all of a week's page rows (the message was
+// deleteArchivePageRows removes one part's page rows (the message was
 // cleared but kept).
-func deleteArchivePageRows(dbc *sql.DB, guildID, weekStr string) error {
-	_, err := dbc.Exec(`DELETE FROM weekly_screenshot_pages WHERE guild_id = $1 AND culvert_date = $2`, guildID, weekStr)
+func deleteArchivePageRows(dbc *sql.DB, guildID, weekStr string, part int) error {
+	_, err := dbc.Exec(`DELETE FROM weekly_screenshot_pages WHERE guild_id = $1 AND culvert_date = $2 AND archive_part = $3`, guildID, weekStr, part)
 	return err
 }
 
-// deleteGuildScreenshotArchive removes a week's archive record and page rows
+// deleteGuildScreenshotArchive removes one part's archive record and page rows
 // (Discord confirmed the message itself was deleted).
-func deleteGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string) error {
-	if err := deleteArchivePageRows(dbc, guildID, weekStr); err != nil {
+func deleteGuildScreenshotArchive(dbc *sql.DB, guildID, weekStr string, part int) error {
+	if err := deleteArchivePageRows(dbc, guildID, weekStr, part); err != nil {
 		return err
 	}
-	_, err := dbc.Exec(`DELETE FROM weekly_screenshot_archives WHERE guild_id = $1 AND culvert_date = $2`, guildID, weekStr)
+	_, err := dbc.Exec(`DELETE FROM weekly_screenshot_archives WHERE guild_id = $1 AND culvert_date = $2 AND archive_part = $3`, guildID, weekStr, part)
 	return err
 }
 

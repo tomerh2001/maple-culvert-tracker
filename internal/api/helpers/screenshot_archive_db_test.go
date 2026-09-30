@@ -21,7 +21,7 @@ const arcWeek = "2026-07-29"
 
 func TestScreenshotArchiveLoadMissing(t *testing.T) {
 	dbc := testdb.TestDB(t)
-	channelID, messageID, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+	channelID, messageID, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -45,13 +45,13 @@ func TestScreenshotArchivePageLifecycle(t *testing.T) {
 	}
 
 	// Insert two pages (id 0 = new row).
-	if err := saveArchivePage(dbc, arcGuildA, arcWeek, 0, "att-1", []string{"Alpha", "Beta"}); err != nil {
+	if err := saveArchivePage(dbc, arcGuildA, arcWeek, 0, 0, "att-1", []string{"Alpha", "Beta"}); err != nil {
 		t.Fatalf("insert page 1: %v", err)
 	}
-	if err := saveArchivePage(dbc, arcGuildA, arcWeek, 0, "att-2", []string{"Gamma"}); err != nil {
+	if err := saveArchivePage(dbc, arcGuildA, arcWeek, 0, 0, "att-2", []string{"Gamma"}); err != nil {
 		t.Fatalf("insert page 2: %v", err)
 	}
-	_, _, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+	_, _, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -64,10 +64,10 @@ func TestScreenshotArchivePageLifecycle(t *testing.T) {
 
 	// Replace page 1: same row, new attachment + names, fresher updated_at.
 	firstUpdated := pages[0].updatedAt
-	if err := saveArchivePage(dbc, arcGuildA, arcWeek, pages[0].id, "att-1b", []string{"Alpha", "Delta"}); err != nil {
+	if err := saveArchivePage(dbc, arcGuildA, arcWeek, 0, pages[0].id, "att-1b", []string{"Alpha", "Delta"}); err != nil {
 		t.Fatalf("replace page 1: %v", err)
 	}
-	_, _, pages, err = loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+	_, _, pages, err = loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -87,18 +87,18 @@ func TestScreenshotArchivePageLifecycle(t *testing.T) {
 	if err := deleteArchivePageByID(dbc, pages[0].id); err != nil {
 		t.Fatalf("delete page: %v", err)
 	}
-	if _, _, pages, _ = loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek); len(pages) != 1 {
+	if _, _, pages, _ = loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0); len(pages) != 1 {
 		t.Fatalf("after delete, %d pages remain, want 1", len(pages))
 	}
 
 	// Full teardown (unreachable message): record and pages both go.
-	if err := deleteGuildScreenshotArchive(dbc, arcGuildA, arcWeek); err != nil {
+	if err := deleteGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0); err != nil {
 		t.Fatalf("delete archive: %v", err)
 	}
 	if archiveRowExists(dbc, arcGuildA, arcWeek) {
 		t.Fatal("record survived deleteGuildScreenshotArchive")
 	}
-	if _, _, pages, _ = loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek); len(pages) != 0 {
+	if _, _, pages, _ = loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0); len(pages) != 0 {
 		t.Fatalf("pages survived deleteGuildScreenshotArchive: %v", pages)
 	}
 }
@@ -113,18 +113,18 @@ func TestScreenshotArchiveGuildScoped(t *testing.T) {
 			gid, arcWeek); err != nil {
 			t.Fatalf("insert record for %s: %v", gid, err)
 		}
-		if err := saveArchivePage(dbc, gid, arcWeek, 0, "att-"+gid, []string{"Name" + gid}); err != nil {
+		if err := saveArchivePage(dbc, gid, arcWeek, 0, 0, "att-"+gid, []string{"Name" + gid}); err != nil {
 			t.Fatalf("insert page for %s: %v", gid, err)
 		}
 	}
 
-	if err := deleteArchivePageRows(dbc, arcGuildA, arcWeek); err != nil {
+	if err := deleteArchivePageRows(dbc, arcGuildA, arcWeek, 0); err != nil {
 		t.Fatalf("clear guild A pages: %v", err)
 	}
-	if _, _, pages, _ := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek); len(pages) != 0 {
+	if _, _, pages, _ := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0); len(pages) != 0 {
 		t.Fatalf("guild A pages survived the clear: %v", pages)
 	}
-	_, messageID, pages, err := loadGuildScreenshotArchive(dbc, arcGuildB, arcWeek)
+	_, messageID, pages, err := loadGuildScreenshotArchive(dbc, arcGuildB, arcWeek, 0)
 	if err != nil {
 		t.Fatalf("load guild B: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestScreenshotArchivePageOrdering(t *testing.T) {
 		time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("insert pages: %v", err)
 	}
-	_, _, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+	_, _, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}

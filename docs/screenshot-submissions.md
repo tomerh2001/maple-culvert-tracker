@@ -1,50 +1,44 @@
-# Paste-and-submit screenshots
+# Numbered screenshot submissions
 
-Run `/submit-scores`, paste and send images as normal messages in that channel,
-then click **Submit** on the private prompt. The batch holds up to 10 images for
-10 minutes. **Cancel** discards the batch. Images posted in the channel keep the
-channel's normal visibility; only the prompt and receipt are private.
+`/submit-scores` accepts up to 20 images through `screenshot-1:` to
+`screenshot-20:`. Attach the images to the command and send it. The bot processes
+them together and returns a private receipt. `date:` selects another week.
 
-The bot collects attachments from the command's author in that exact guild and
-channel. It ignores other users, bots, webhooks, non-image attachments, and
-messages from before the command. A second command in the same location points
-the user back to their existing prompt. Starting in another channel creates an
-independent batch. A restart discards unfinished batches; stale buttons explain
-how to start again.
+The numbered attachment fields are the preferred submission interface. They were
+restored on September 30, 2026 after the paste-and-submit collection flow proved
+inconvenient. Keep them as the primary interface unless the owner asks to change
+it. There is no pending collection session, upload prompt, Submit/Cancel button,
+or requirement to post images publicly before submitting them.
 
-The command fixes the destination week when the session starts. Submit rechecks
-permissions, acquires the existing tenant submission guard, and sends the whole
-batch through the existing OCR, conflict, overwrite-confirmation, and archive
-pipeline. Collection alone never writes scores. Failed button acknowledgements
-restore the batch for retry if it has not expired or been superseded.
+For existing screenshot messages, the **Submit Scores** message context menu and
+`message-link:` remain available. Direct image attachments take precedence when a
+message link is also supplied. A command with neither returns usage guidance. The same
+permission checks, tenant submission guard, OCR validation, and screenshot
+archive processing apply to direct submissions. Resubmissions replace existing
+scores for the selected week. When screenshot history is enabled, the bot stores
+up to 20 images across two archive messages, with at most 10 images per message.
 
-## Discord configuration
+## Discord registration
 
-Ordinary guild messages require the **Message Content** privileged intent for
-their attachments to reach the bot. Enable it for the application before
-deploying code that requests it; otherwise Discord rejects the Gateway login
-with code 4014.
+The bot registers its global command definitions on startup. Deploy the published
+bot image and restart the bot to register updated options. Verify the registered
+`submit-scores` command has 20 attachment options named `screenshot-1` through
+`screenshot-20`, plus `date` and `message-link`.
 
-For an eligible application below Discord's verification threshold, Bot-authenticated
-`PATCH /applications/@me` accepts the limited intent flags. Read the current
-flags, preserve every existing bit, and set `GATEWAY_MESSAGE_CONTENT_LIMITED`
-(`1 << 19`). Read the application again to verify the change. Applications
-requiring approval must use Discord's approval process instead.
+Slash-command attachments are resolved from the interaction payload. The bot no
+longer requests the Message Content intent or subscribes to message events to
+collect screenshots. Application-command dispatch still checks the interaction
+type before accessing command data.
 
-DiscordGo v0.29.0 delivers component interactions through the same event type as
-commands. Check `InteractionApplicationCommand` before calling
-`ApplicationCommandData()`; component data must go to its own handler. Use a
-deferred message update to edit the original private upload prompt into the
-receipt, clearing the buttons when the batch closes.
+## Verification
 
-DiscordGo launches event handlers concurrently. Submission sorts message
-snowflakes to retain screenshot order and deduplicates repeated MessageCreate
-events. A bounded 100-message cache per channel lets Submit reconcile recent
-uploads that Discord has received but whose handler has not run yet. Only
-messages preceding the button interaction belong to that submission. Prompt
-edits are serialized separately from batch state so a slow count update cannot
-overwrite the final receipt or delay acknowledging Submit.
+Run the command tests with `go test ./internal/commands/...`, then the full
+suite with `go test ./...`. Database integration tests require a disposable
+PostgreSQL database in `TEST_DATABASE_URL`; never use the service database,
+because the test harness truncates its tables. Verify the deployed command
+schema with the bot's normal credentials without posting test scores.
 
-References: [Message Content intent](https://docs.discord.com/developers/events/gateway#message-content-intent),
-[application flags and edits](https://docs.discord.com/developers/resources/application#edit-current-application),
-and [interaction responses](https://docs.discord.com/developers/interactions/receiving-and-responding#interaction-response-object-interaction-callback-type).
+On the home server, Go tests can run in the existing `golang:1.26.6-bookworm`
+container image. Use the operator's UID/GID and the user-owned
+`~/.cache/maple-culvert-go/{build,modules}` cache directories. Keep test database
+credentials separate from the deployed bot's environment.

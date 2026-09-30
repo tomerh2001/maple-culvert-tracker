@@ -110,21 +110,8 @@ var Commands = []*discordgo.ApplicationCommand{
 	// ── Submitters / admins ─────────────────────────────────────────────────
 	{
 		Name:        "submit-scores",
-		Description: "Start a screenshot submission, then paste and send images in this channel",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "date",
-				Description: "Which week these are for (YYYY-MM-DD or a Discord timestamp; default: this week)",
-			},
-			{
-				Required:    false,
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "message-link",
-				Description: "Submit an existing screenshot message's images instead (right click -> Copy Message Link)",
-			},
-		},
+		Description: "Submit weekly culvert scores from screenshot(s) attached to this command",
+		Options:     submitScoresCommandOptions(),
 	},
 	{
 		Name:        "set-culvert",

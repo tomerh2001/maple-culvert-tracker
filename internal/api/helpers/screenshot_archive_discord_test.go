@@ -68,12 +68,12 @@ func seedDiscordArchive(t *testing.T, dbc *sql.DB) ([]storedArchivePage, []*disc
 	attachments := []*discordgo.MessageAttachment{}
 	for i, name := range []string{"Alpha", "Beta", "Gamma"} {
 		id := fmt.Sprintf("100%d", i)
-		if err := saveArchivePage(dbc, arcGuildA, arcWeek, 0, id, []string{name}); err != nil {
+		if err := saveArchivePage(dbc, arcGuildA, arcWeek, 0, 0, id, []string{name}); err != nil {
 			t.Fatal(err)
 		}
 		attachments = append(attachments, &discordgo.MessageAttachment{ID: id, Filename: name + ".png"})
 	}
-	_, _, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+	_, _, pages, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func seedDiscordArchive(t *testing.T, dbc *sql.DB) ([]storedArchivePage, []*disc
 
 func assertDiscordArchiveUnchanged(t *testing.T, dbc *sql.DB, before []storedArchivePage) {
 	t.Helper()
-	channelID, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+	channelID, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestScreenshotArchivePartialUpdateRetainsOtherPages(t *testing.T) {
 	if !reflect.DeepEqual(requests, []string{http.MethodGet, http.MethodPatch}) {
 		t.Fatalf("requests = %v, want GET then PATCH without a new message", requests)
 	}
-	channelID, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+	channelID, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 	if err != nil || channelID != "chan" || messageID != "msg" || len(after) != 3 {
 		t.Fatalf("archive = %q/%q %+v, err = %v", channelID, messageID, after, err)
 	}
@@ -269,7 +269,7 @@ func TestScreenshotArchiveDeletedMessageRecreated(t *testing.T) {
 			if err := upsertGuildScreenshotArchive(s, dbc, arcGuildA, "", arcWeek, []ScreenshotPage{{Bytes: []byte("new screenshot"), Names: []string{"Alpha"}}}); err != nil {
 				t.Fatal(err)
 			}
-			channelID, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+			channelID, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 			if err != nil || posts != 1 || channelID != "chan" || messageID != "new-msg" || len(after) != 1 || after[0].attachmentID != "2000" {
 				t.Fatalf("recreated archive = %q/%q %+v, posts = %d, err = %v", channelID, messageID, after, posts, err)
 			}
@@ -345,7 +345,7 @@ func TestClearScreenshotArchiveSuccessAndDeletedMessage(t *testing.T) {
 			if err := ClearWeekScreenshots(s, dbc, arcGuildA, week); err != nil {
 				t.Fatal(err)
 			}
-			_, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek)
+			_, messageID, after, err := loadGuildScreenshotArchive(dbc, arcGuildA, arcWeek, 0)
 			if err != nil || len(after) != 0 || deleted && messageID != "" || !deleted && messageID != "msg" {
 				t.Fatalf("cleared archive = %q %+v, err = %v", messageID, after, err)
 			}
