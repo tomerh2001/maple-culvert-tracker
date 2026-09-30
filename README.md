@@ -8,7 +8,7 @@ A self-hosted Discord bot that tracks your MapleStory guild's weekly **Sharenian
 
 ## What it does
 
-- **Screenshots → scores**: run `/submit-scores` with `screenshot-1:`, `screenshot-2:`, and up to `screenshot-10:` attachment options. The command submits the selected images immediately. You can also right click an existing screenshot message → Apps → **Submit Scores**. The bot reads the in-game *Guild → Member Participation Status* table (full window is fine, no cropping needed, 1x/2x scale supported) and records everyone's weekly score. Unknown names are auto-tracked (canonicalized against the official rankings), and resubmissions replace existing scores for the selected week.
+- **Screenshots → scores**: run `/submit-scores` with `screenshot-1:`, `screenshot-2:`, and up to `screenshot-20:` attachment options. The command submits the selected images immediately. You can also right click an existing screenshot message → Apps → **Submit Scores**. The bot reads the in-game *Guild → Member Participation Status* table (full window is fine, no cropping needed, 1x/2x scale supported) and records everyone's weekly score. Unknown names are auto-tracked (canonicalized against the official rankings), and resubmissions replace existing scores for the selected week.
 - **Screenshot history channel** (optional): point `Discord Screenshot Archive Channel ID` at a channel and the bot keeps one message per week there with the screenshots each submission was parsed from - a resubmitted page replaces its older version (matched by the names on it, not its position), so the message always shows the newest shot of every page.
 - **Live weekly announcement and closing recap**: in a designated channel the bot keeps a single SUMMARY message per culvert week (coverage, top scores, guild total), with the full ranked table as the first comment of its thread - both edited in place on every data change (submissions, registrations, corrections, resets) - plus submission notes and personal-best shoutouts that @mention the member. At the Thursday 00:00 UTC reset, a completed week with submissions gets one new **Culvert recap - Week of YYYY-MM-DD** message with the same summary and thread details. No recap is posted for an empty week. See [recap scheduling and retry behavior](docs/weekly-recaps.md).
 - **Members self-serve**: `/register` links a character to a Discord account, `/culvert` charts progression (yours, `name:@someone`, or any `name:SomeChar`) and stamps the chart with when those scores were last updated, right click a member → Apps → **Culvert** works too.
@@ -29,7 +29,7 @@ The entire surface — 13 slash commands, 2 context menus:
 | `/registered` | everyone | List every member who has linked a character |
 | `/culvert` | everyone | Progression chart: `name:` is a character or a `@mention` (default you); optional `from:`/`to:` dates |
 | `/culvert-all` | everyone | Weekly score-descending table (optional `date:`) |
-| `/submit-scores` | submitters | Attach up to 10 images using `screenshot-1:` through `screenshot-10:`; optional `date:` or `message-link:` |
+| `/submit-scores` | submitters | Attach up to 20 images using `screenshot-1:` through `screenshot-20:`; optional `date:` or `message-link:` |
 | `/set-culvert` | submitters | Set one character's score for a week (unknown names auto-tracked) |
 | `/config` | admins | View/change all bot settings (`setting:` + `value:`) |
 | `/setup` | admins | Admin setup guide + live status |
@@ -43,7 +43,7 @@ Date options accept `YYYY-MM-DD` or a Discord timestamp mention (`<t:123456>`).
 ### Submitting screenshots
 
 1. Choose `/submit-scores` and attach an image to `screenshot-1:`.
-2. Add more images with `screenshot-2:` through `screenshot-10:`. Use `date:` if they belong to a different week.
+2. Add more images with `screenshot-2:` through `screenshot-20:`. Use `date:` if they belong to a different week.
 3. Send the command. The bot processes the selected images together and returns a private receipt.
 
 You do not need to post screenshots as channel messages or click a separate Submit button. Running the command without an image or message link shows usage guidance.

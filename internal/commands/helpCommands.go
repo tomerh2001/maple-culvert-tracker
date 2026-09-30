@@ -62,7 +62,7 @@ Also optional: ` + "`/config setting:Discord Screenshot Archive Channel ID value
 Members self-serve with ` + "`/register`" + ` (submitters can link anyone: ` + "`/register name:X user:@member`" + `). Submitting scores auto-tracks unknown names automatically, so a first screenshot submission builds the roster for you. ` + "`/unregister`" + ` handles leavers (history is kept).
 
 **4. Submit scores weekly**
-Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine). Run ` + "`/submit-scores`" + ` and attach the images with ` + "`screenshot-1`" + ` through ` + "`screenshot-10`" + `. The bot processes them immediately. For screenshots already posted, right click the message -> Apps -> **Submit Scores**, or use ` + "`message-link:`" + `. Add ` + "`date:`" + ` to submit for a different week.
+Screenshot the in-game **Guild -> Guild Contents -> Member Participation Status** window (full window is fine). Run ` + "`/submit-scores`" + ` and attach the images with ` + "`screenshot-1`" + ` through ` + "`screenshot-20`" + `. The bot processes them immediately. For screenshots already posted, right click the message -> Apps -> **Submit Scores**, or use ` + "`message-link:`" + `. Add ` + "`date:`" + ` to submit for a different week.
 - Scores land on the current culvert week (it rolls over weekly)
 - Resubmitting replaces existing scores for that week
 - Single fixes (typos, missed rows, past weeks): ` + "`/set-culvert name:X score:123 date:YYYY-MM-DD`" + `

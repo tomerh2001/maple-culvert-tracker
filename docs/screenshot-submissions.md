@@ -1,7 +1,7 @@
 # Numbered screenshot submissions
 
-`/submit-scores` accepts up to 10 images through `screenshot-1:` to
-`screenshot-10:`. Attach the images to the command and send it. The bot processes
+`/submit-scores` accepts up to 20 images through `screenshot-1:` to
+`screenshot-20:`. Attach the images to the command and send it. The bot processes
 them together and returns a private receipt. `date:` selects another week.
 
 The numbered attachment fields are the preferred submission interface. They were
@@ -21,8 +21,8 @@ scores for the selected week.
 
 The bot registers its global command definitions on startup. Deploy the published
 bot image and restart the bot to register updated options. Verify the registered
-`submit-scores` command has 10 attachment options named `screenshot-1` through
-`screenshot-10`, plus `date` and `message-link`.
+`submit-scores` command has 20 attachment options named `screenshot-1` through
+`screenshot-20`, plus `date` and `message-link`.
 
 Slash-command attachments are resolved from the interaction payload. The bot no
 longer requests the Message Content intent or subscribes to message events to

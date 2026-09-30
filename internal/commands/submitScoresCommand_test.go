@@ -25,14 +25,14 @@ func TestSubmitScoresCommandAttachmentOptions(t *testing.T) {
 	if command == nil {
 		t.Fatal("submit-scores command is not registered")
 	}
-	if len(command.Options) != 12 {
-		t.Fatalf("got %d options, want ten screenshots plus date and message-link", len(command.Options))
+	if len(command.Options) != 22 {
+		t.Fatalf("got %d options, want twenty screenshots plus date and message-link", len(command.Options))
 	}
 	for idx, option := range command.Options {
 		wantName := fmt.Sprintf("screenshot-%d", idx+1)
 		wantType := discordgo.ApplicationCommandOptionAttachment
-		if idx >= 10 {
-			wantName = []string{"date", "message-link"}[idx-10]
+		if idx >= 20 {
+			wantName = []string{"date", "message-link"}[idx-20]
 			wantType = discordgo.ApplicationCommandOptionString
 		}
 		if option.Name != wantName || option.Type != wantType || option.Required {
@@ -83,18 +83,18 @@ func TestCommandImageURLsEmpty(t *testing.T) {
 	}
 }
 
-func TestCommandImageURLsAllTenSlots(t *testing.T) {
+func TestCommandImageURLsAllTwentySlots(t *testing.T) {
 	data := discordgo.ApplicationCommandInteractionData{
 		Resolved: &discordgo.ApplicationCommandInteractionDataResolved{
 			Attachments: map[string]*discordgo.MessageAttachment{},
 		},
 	}
-	want := make([]string, 0, 10)
-	for n := 1; n <= 10; n++ {
+	want := make([]string, 0, 20)
+	for n := 1; n <= 20; n++ {
 		id := fmt.Sprintf("a%d", n)
 		url := fmt.Sprintf("https://cdn/page-%d.png", n)
 		// Users may pick the command fields in any order; the slot numbers
-		// still determine page order, including screenshot-10 after -9.
+		// still determine page order, including screenshot-10 after -9 and screenshot-20 last.
 		data.Options = append([]*discordgo.ApplicationCommandInteractionDataOption{{
 			Name: fmt.Sprintf("screenshot-%d", n), Type: discordgo.ApplicationCommandOptionAttachment, Value: id,
 		}}, data.Options...)

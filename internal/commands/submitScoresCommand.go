@@ -11,6 +11,35 @@ import (
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 )
 
+const maxSubmitScreenshots = 20
+
+func submitScoresCommandOptions() []*discordgo.ApplicationCommandOption {
+	options := make([]*discordgo.ApplicationCommandOption, 0, maxSubmitScreenshots+2)
+	for n := 1; n <= maxSubmitScreenshots; n++ {
+		description := "Another page of the roster (optional)"
+		if n == 1 {
+			description = "A screenshot of the Guild - Member Participation Status window (or use message-link)"
+		}
+		options = append(options, &discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionAttachment,
+			Name:        fmt.Sprintf("screenshot-%d", n),
+			Description: description,
+		})
+	}
+	return append(options,
+		&discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "date",
+			Description: "Which week these are for (YYYY-MM-DD or a Discord timestamp; default: this week)",
+		},
+		&discordgo.ApplicationCommandOption{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "message-link",
+			Description: "Submit an existing screenshot message's images instead (right click -> Copy Message Link)",
+		},
+	)
+}
+
 // submitScoresCommand is the /submit-scores slash command: it OCRs the
 // screenshot(s) attached to the command (or, when a message-link is given, the
 // images on that existing message) and submits them, exactly like the
@@ -88,7 +117,7 @@ func submitScoresCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		pages, parseWarnings, ok = scoresFromMessage(s, r, tenant, msg, scores)
 	default:
-		r.editScreenshotFailure("Attach a screenshot with `screenshot-1` (add more with `screenshot-2` through `screenshot-10`), or pass a `message-link` to an existing screenshot message.")
+		r.editScreenshotFailure(fmt.Sprintf("Attach a screenshot with `screenshot-1` (add more with `screenshot-2` through `screenshot-%d`), or pass a `message-link` to an existing screenshot message.", maxSubmitScreenshots))
 		return
 	}
 	if !ok {
@@ -115,7 +144,7 @@ func commandImageURLs(i *discordgo.InteractionCreate) []string {
 		attachments[opt.Name] = id
 	}
 	urls := []string{}
-	for n := 1; n <= 10; n++ {
+	for n := 1; n <= maxSubmitScreenshots; n++ {
 		id, supplied := attachments[fmt.Sprintf("screenshot-%d", n)]
 		if !supplied {
 			continue
