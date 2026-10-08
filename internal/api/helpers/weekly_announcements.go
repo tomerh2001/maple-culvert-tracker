@@ -442,7 +442,8 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID
 		}
 		// Drop any table file attached by the pre-thread-table layout.
 		summaryEdit.Attachments = &[]*discordgo.MessageAttachment{}
-		if _, err := s.ChannelMessageEditComplex(summaryEdit); err == nil {
+		_, editErr := s.ChannelMessageEditComplex(summaryEdit)
+		if editErr == nil {
 			if storedThread == "" {
 				// Self-heal: an earlier run posted the message but failed to
 				// start its thread. Retry now and remember the result.
@@ -465,10 +466,17 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID
 			}
 			return storedThread, nil
 		}
-		// The stored message is gone (deleted channel/message); drop the stale
+		var restErr *discordgo.RESTError
+		if !errors.As(editErr, &restErr) || restErr.Message == nil || restErr.Message.Code != discordgo.ErrCodeUnknownMessage {
+			// Permissions and transient failures do not prove deletion. Keep
+			// the stored IDs so a later refresh retries the same message.
+			log.Println("weekly artifacts: edit weekly message failed; retaining record:", editErr)
+			return storedThread, errors.New("updating the weekly message failed - existing message kept for retry (see server logs)")
+		}
+		// Discord confirmed that the stored message is gone; drop the stale
 		// record. A refresh (non-submission mutation) stops here - it must
 		// never CREATE a post; the next submission recreates it.
-		log.Println("weekly artifacts: stored weekly message unreachable, clearing record")
+		log.Println("weekly artifacts: stored weekly message deleted, clearing record")
 		if _, err := dbc.Exec(`DELETE FROM weekly_announcements WHERE guild_id = $1 AND culvert_date = $2`, guildID, weekStr); err != nil {
 			log.Println("weekly artifacts: delete stale weekly_announcements:", err)
 			return "", errors.New("the stored weekly message is unreachable and its record could not be reset (see server logs)")
