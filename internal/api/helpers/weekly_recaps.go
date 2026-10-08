@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	cmdhelpers "github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/data"
 	redis "github.com/valkey-io/valkey-go"
@@ -19,9 +21,19 @@ import (
 
 // AnnounceWeeklyRecaps posts the most recently completed week's summary and
 // thread once per guild. It runs at reset and catches up after a restart, but
-// never replays older history. Only weeks with an existing submission message
-// and remaining visible scores qualify. Each guild keeps its original channel.
+// never replays older history. Empty/unconfigured weeks are durably skipped:
+// submitting old scores after reset must not trigger an extra recap.
 func AnnounceWeeklyRecaps(ctx context.Context, s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, guildIDs []string, now time.Time) error {
+	return announceWeeklyRecaps(ctx, s, dbc, rdb, guildIDs, now, func(guildID string) (string, error) {
+		channelID, err := apiredis.CONF_DISCORD_WEEKLY_CHANNEL_ID.For(guildID).Get(rdb)
+		if errors.Is(err, redis.Nil) {
+			return "", nil
+		}
+		return channelID, err
+	})
+}
+
+func announceWeeklyRecaps(ctx context.Context, s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, guildIDs []string, now time.Time, configuredChannel func(string) (string, error)) error {
 	week := cmdhelpers.GetCulvertPreviousDate(cmdhelpers.CurrentCulvertWeek(now))
 	weekStr := week.Format(time.DateOnly)
 	artifacts := map[string]weeklyArtifacts{}
@@ -35,16 +47,15 @@ func AnnounceWeeklyRecaps(ctx context.Context, s *discordgo.Session, dbc *sql.DB
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		var channelID string
+		var channelID, tableID string
+		var skipped bool
 		err := dbc.QueryRowContext(ctx, `
-			SELECT a.channel_id FROM weekly_announcements a
-			LEFT JOIN weekly_recaps r USING (guild_id, culvert_date)
-			WHERE a.guild_id = $1 AND a.culvert_date = $2
-			AND COALESCE(r.table_message_id, '') = ''`, guildID, weekStr).Scan(&channelID)
-		if errors.Is(err, sql.ErrNoRows) {
+			SELECT channel_id, table_message_id, skipped FROM weekly_recaps
+			WHERE guild_id = $1 AND culvert_date = $2`, guildID, weekStr).Scan(&channelID, &tableID, &skipped)
+		if err == nil && (tableID != "" || skipped) {
 			continue
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			failures = append(failures, fmt.Errorf("recap guild %s: %w", guildID, err))
 			continue
 		}
@@ -59,10 +70,20 @@ func AnnounceWeeklyRecaps(ctx context.Context, s *discordgo.Session, dbc *sql.DB
 			art.summaryEmbed.Title = "Culvert recap - Week of " + weekStr
 			artifacts[tenantID] = art
 		}
-		if len(art.rows) == 0 {
-			continue
+		if len(art.rows) > 0 && channelID == "" {
+			// Reuse the original destination when available. Scores can exist
+			// without an announcement, including after a message was deleted.
+			err = dbc.QueryRowContext(ctx, `SELECT channel_id FROM weekly_announcements
+				WHERE guild_id = $1 AND culvert_date = $2`, guildID, weekStr).Scan(&channelID)
+			if errors.Is(err, sql.ErrNoRows) {
+				channelID, err = configuredChannel(guildID)
+			}
+			if err != nil {
+				failures = append(failures, fmt.Errorf("recap channel for guild %s: %w", guildID, err))
+				continue
+			}
 		}
-		if err := postWeeklyRecap(ctx, s, dbc, guildID, channelID, art); err != nil {
+		if err := postWeeklyRecap(ctx, s, dbc, guildID, channelID, art, len(art.rows) == 0 || channelID == ""); err != nil {
 			failures = append(failures, fmt.Errorf("recap guild %s: %w", guildID, err))
 		}
 	}
@@ -70,9 +91,10 @@ func AnnounceWeeklyRecaps(ctx context.Context, s *discordgo.Session, dbc *sql.DB
 }
 
 // postWeeklyRecap persists each successful Discord step before attempting the
-// next. A per-guild/week database lock prevents overlapping bot processes from
-// posting duplicates. Failures retain progress for the next scheduled retry.
-func postWeeklyRecap(ctx context.Context, s *discordgo.Session, dbc *sql.DB, guildID, channelID string, art weeklyArtifacts) error {
+// next. The same per-guild/week database lock serializes skip decisions and
+// delivery. A persisted skip or completed delivery is final, even if another
+// worker computed a different decision before acquiring the lock.
+func postWeeklyRecap(ctx context.Context, s *discordgo.Session, dbc *sql.DB, guildID, channelID string, art weeklyArtifacts, skip bool) error {
 	conn, err := dbc.Conn(ctx)
 	if err != nil {
 		return err
@@ -96,17 +118,22 @@ func postWeeklyRecap(ctx context.Context, s *discordgo.Session, dbc *sql.DB, gui
 			conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
-	if _, err := conn.ExecContext(ctx, `INSERT INTO weekly_recaps (guild_id, culvert_date, channel_id)
-		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, guildID, art.weekStr, channelID); err != nil {
+	result, err := conn.ExecContext(ctx, `INSERT INTO weekly_recaps (guild_id, culvert_date, channel_id, skipped)
+		VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, guildID, art.weekStr, channelID, skip)
+	if err != nil {
 		return err
+	}
+	if inserted, _ := result.RowsAffected(); skip && inserted == 1 {
+		log.Printf("weekly recap: skipped guild %s week %s (no visible scores or channel at reset check)", guildID, art.weekStr)
 	}
 	var messageID, threadID, tableID string
-	if err := conn.QueryRowContext(ctx, `SELECT channel_id, message_id, thread_id, table_message_id
+	var skipped bool
+	if err := conn.QueryRowContext(ctx, `SELECT channel_id, message_id, thread_id, table_message_id, skipped
 		FROM weekly_recaps WHERE guild_id = $1 AND culvert_date = $2`, guildID, art.weekStr).
-		Scan(&channelID, &messageID, &threadID, &tableID); err != nil {
+		Scan(&channelID, &messageID, &threadID, &tableID, &skipped); err != nil {
 		return err
 	}
-	if tableID != "" {
+	if tableID != "" || skipped || skip {
 		return nil
 	}
 	if messageID == "" {
@@ -147,6 +174,9 @@ func postWeeklyRecap(ctx context.Context, s *discordgo.Session, dbc *sql.DB, gui
 	}
 	_, err = conn.ExecContext(ctx, `UPDATE weekly_recaps SET table_message_id = $1
 		WHERE guild_id = $2 AND culvert_date = $3`, msg.ID, guildID, art.weekStr)
+	if err == nil {
+		log.Printf("weekly recap: completed guild %s week %s message %s", guildID, art.weekStr, messageID)
+	}
 	return err
 }
 

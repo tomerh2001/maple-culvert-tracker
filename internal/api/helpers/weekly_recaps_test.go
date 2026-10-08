@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -183,12 +184,12 @@ func TestAnnounceWeeklyRecapsSkipsWeeksWithoutVisibleSubmissions(t *testing.T) {
 				t.Fatalf("ineligible week called Discord: %s %s", req.Method, req.URL.Path)
 				return nil, nil
 			})
-			if err := AnnounceWeeklyRecaps(context.Background(), s, dbc, nil, []string{"home"}, time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)); err != nil {
+			if err := announceWeeklyRecaps(context.Background(), s, dbc, nil, []string{"home"}, time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC), func(string) (string, error) { return "", nil }); err != nil {
 				t.Fatal(err)
 			}
 			var count int
-			if err := dbc.QueryRow(`SELECT COUNT(*) FROM weekly_recaps`).Scan(&count); err != nil || count != 0 {
-				t.Fatalf("ineligible week stored %d recap rows, err = %v", count, err)
+			if err := dbc.QueryRow(`SELECT COUNT(*) FROM weekly_recaps WHERE skipped AND message_id = ''`).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("ineligible week stored %d skip records, want 1, err = %v", count, err)
 			}
 		})
 	}
@@ -304,7 +305,7 @@ func TestPostWeeklyRecapRetriesOnlyIncompleteSteps(t *testing.T) {
 				return recapJSONResponse(&discordgo.Message{ID: stage + "-id"})
 			})
 			art := recapTestArtifacts()
-			if err := postWeeklyRecap(context.Background(), s, dbc, "home", "channel-home", art); err == nil {
+			if err := postWeeklyRecap(context.Background(), s, dbc, "home", "channel-home", art, false); err == nil {
 				t.Fatal("failed Discord step must surface an error")
 			}
 			wantProgress := map[string][]string{
@@ -314,7 +315,7 @@ func TestPostWeeklyRecapRetriesOnlyIncompleteSteps(t *testing.T) {
 				t.Fatalf("lost successful steps: got %v, want %v", ids, wantProgress)
 			}
 			for i := 0; i < 2; i++ {
-				if err := postWeeklyRecap(context.Background(), s, dbc, "home", "new-configured-channel", art); err != nil {
+				if err := postWeeklyRecap(context.Background(), s, dbc, "home", "new-configured-channel", art, false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -359,7 +360,7 @@ func TestPostWeeklyRecapRecoversExistingThread(t *testing.T) {
 			return nil, nil
 		}
 	})
-	if err := postWeeklyRecap(context.Background(), s, dbc, "home", "channel-home", recapTestArtifacts()); err != nil {
+	if err := postWeeklyRecap(context.Background(), s, dbc, "home", "channel-home", recapTestArtifacts(), false); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 3 || !reflect.DeepEqual(recapStoredIDs(t, dbc), []string{"summary-id", "summary-id", "details-id"}) {
@@ -385,7 +386,7 @@ func TestPostWeeklyRecapOverlappingRunCannotDuplicateSummary(t *testing.T) {
 			// a different pooled connection and attempts the same guild/week.
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			if err := postWeeklyRecap(ctx, competing, dbc, "home", "channel-home", art); err != nil {
+			if err := postWeeklyRecap(ctx, competing, dbc, "home", "channel-home", art, false); err != nil {
 				t.Fatalf("overlapping worker must skip promptly: %v", err)
 			}
 			return recapJSONResponse(&discordgo.Message{ID: "summary-id"})
@@ -395,7 +396,7 @@ func TestPostWeeklyRecapOverlappingRunCannotDuplicateSummary(t *testing.T) {
 		}
 		return recapJSONResponse(&discordgo.Message{ID: "details-id"})
 	})
-	if err := postWeeklyRecap(context.Background(), s, dbc, "home", "channel-home", art); err != nil {
+	if err := postWeeklyRecap(context.Background(), s, dbc, "home", "channel-home", art, false); err != nil {
 		t.Fatal(err)
 	}
 	if !entered || !reflect.DeepEqual(recapStoredIDs(t, dbc), []string{"summary-id", "summary-id", "details-id"}) {
@@ -417,5 +418,86 @@ func TestSendRecapMessageNonceSurvivesNewSession(t *testing.T) {
 	}
 	if nonces[0] != nonces[1] || nonces[0] == nonces[2] {
 		t.Fatalf("nonce must survive a new session and distinguish artifacts: %v", nonces)
+	}
+}
+
+// An empty week is a completed scheduling decision, not work to revisit when
+// a historical submission arrives. This reproduces the October 8 incident.
+func TestRecapSkippedAtResetStaysSkippedAfterLateSubmission(t *testing.T) {
+	for _, initial := range []string{"no submission", "empty announcement", "no channel"} {
+		t.Run(initial, func(t *testing.T) {
+			dbc := testdb.TestDB(t)
+			t.Setenv(data.EnvVarDiscordGuildID, "home")
+			t.Setenv(data.EnvVarDiscordExtraGuildIDs, "")
+			if initial == "empty announcement" {
+				recapSeedAnnouncement(t, dbc, "home", recapWeek)
+			}
+			if initial == "no channel" {
+				recapSeedCharacter(t, dbc, "home", "LateHero", "2", map[string]int{recapWeek: 1234})
+			}
+			s, messages := recapRecordingSession(t)
+			reset := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+			if err := announceWeeklyRecaps(context.Background(), s, dbc, nil, []string{"home"}, reset, func(string) (string, error) { return "", nil }); err != nil {
+				t.Fatal(err)
+			}
+			if initial != "no channel" {
+				recapSeedCharacter(t, dbc, "home", "LateHero", "2", map[string]int{recapWeek: 1234})
+			}
+			if initial != "empty announcement" {
+				recapSeedAnnouncement(t, dbc, "home", recapWeek)
+			}
+			for _, delay := range []time.Duration{time.Minute, 22 * time.Hour, 6 * 24 * time.Hour} {
+				if err := AnnounceWeeklyRecaps(context.Background(), s, dbc, nil, []string{"home"}, reset.Add(delay)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A competing worker with stale, eligible data must honor the skip too.
+			if err := postWeeklyRecap(context.Background(), s, dbc, "home", "channel-home", recapTestArtifacts(), false); err != nil {
+				t.Fatal(err)
+			}
+			if len(messages) != 0 {
+				t.Fatalf("late submission revived a skipped recap: %+v", messages)
+			}
+			// Skipping one week must not suppress next week's reset.
+			nextWeek := "2026-09-16"
+			recapSeedAnnouncement(t, dbc, "home", nextWeek)
+			recapSeedCharacter(t, dbc, "home", "NextHero", "2", map[string]int{nextWeek: 2345})
+			if err := AnnounceWeeklyRecaps(context.Background(), s, dbc, nil, []string{"home"}, reset.AddDate(0, 0, 7)); err != nil {
+				t.Fatal(err)
+			}
+			if len(messages["channel-home"]) != 1 {
+				t.Fatalf("next week's scheduled recap missing: %+v", messages)
+			}
+		})
+	}
+}
+
+func TestRecapAtResetWithoutAnnouncementUsesConfiguredChannel(t *testing.T) {
+	dbc := testdb.TestDB(t)
+	t.Setenv(data.EnvVarDiscordGuildID, "home")
+	t.Setenv(data.EnvVarDiscordExtraGuildIDs, "")
+	recapSeedCharacter(t, dbc, "home", "Hero", "2", map[string]int{recapWeek: 1234})
+	s, messages := recapRecordingSession(t)
+	reset := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	configErr := errors.New("configuration temporarily unavailable")
+	if err := announceWeeklyRecaps(context.Background(), s, dbc, nil, []string{"home"}, reset, func(string) (string, error) { return "", configErr }); !errors.Is(err, configErr) {
+		t.Fatalf("configuration failure = %v, want retryable error", err)
+	}
+	var count int
+	if err := dbc.QueryRow(`SELECT COUNT(*) FROM weekly_recaps`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("config failure permanently decided recap: count=%d, err=%v", count, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := announceWeeklyRecaps(context.Background(), s, dbc, nil, []string{"home"}, reset, func(guildID string) (string, error) {
+			if guildID != "home" {
+				t.Fatalf("unexpected config guild %s", guildID)
+			}
+			return "configured-channel", nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(messages["configured-channel"]) != 1 || len(messages["posted-configured-channel"]) != 1 {
+		t.Fatalf("expected one scheduled recap without a live announcement: %+v", messages)
 	}
 }
