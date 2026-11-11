@@ -3,7 +3,7 @@ package commands
 //lint:file-ignore ST1001 Dot imports by jet
 
 import (
-	"database/sql"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	. "github.com/go-jet/jet/v2/postgres"
-	. "github.com/tomerh2001/maple-culvert-tracker/.gen/mapleculverttrackerdb/public/table"
 	apihelpers "github.com/tomerh2001/maple-culvert-tracker/internal/api/helpers"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/apiredis"
 	"github.com/tomerh2001/maple-culvert-tracker/internal/commands/helpers"
@@ -36,100 +34,39 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 	tenant := tenantOf(i)
 	weekLabel := helpers.FormatWeekLabel(week, time.Now())
 
-	characters, rosterMeta, err := helpers.GetActiveCharactersWithMeta(apiredis.RedisDB, db.DB, tenant)
+	ids, rosterWarning, err := SubmissionRoster(db.DB, tenant)
 	if err != nil {
-		log.Println("submitScores: Error querying active characters:", err)
-		r.Edit("Internal server error while querying active characters. Please try again later.")
+		r.Edit("Internal server error while querying active characters.")
 		return
 	}
-
-	tracked := []trackedScore{}
-	if len(*characters) > 0 {
-		characterIDs := []Expression{}
-		for _, v := range *characters {
-			characterIDs = append(characterIDs, Int64(v.ID))
-		}
-
-		stmt := SELECT(Characters.ID.AS("id"), Characters.MapleCharacterName.AS("maple_character_name"), CharacterCulvertScores.Score.AS("score")).FROM(Characters.LEFT_JOIN(CharacterCulvertScores, Characters.ID.EQ(CharacterCulvertScores.CharacterID).AND(CharacterCulvertScores.CulvertDate.EQ(DateT(week))))).WHERE(Characters.ID.IN(characterIDs...))
-
-		trackedCharacterScores := []struct {
-			ID                 int
-			MapleCharacterName string
-			Score              sql.NullInt64
-		}{}
-
-		err = stmt.Query(db.DB, &trackedCharacterScores)
-		if err != nil {
-			log.Println("submitScores: Error querying tracked character scores:", err)
-			r.Edit("Internal server error while querying existing scores. Please try again later.")
-			return
-		}
-
-		for _, v := range trackedCharacterScores {
-			t := trackedScore{ID: int64(v.ID), Name: v.MapleCharacterName}
-			if v.Score.Valid {
-				existing := int(v.Score.Int64)
-				t.Existing = &existing
-			}
-			tracked = append(tracked, t)
-		}
-	}
-
-	// Canonicalize would-be-new names against the official rankings before
-	// planning: exact hits adopt the rankings spelling, l/I bar mixups may
-	// resolve onto an already-tracked character, and unresolved names keep
-	// their decode with a "spelling unverified" receipt note.
-	unverified := canonicalizeSubmitted(tenant, submitted, tracked)
-
-	// Submissions ALWAYS overwrite existing scores for the week - no
-	// resubmit-to-confirm step. A misread is fixed by resubmitting or with
-	// /set-culvert / /reset-week.
-	plan := planSubmission(tracked, submitted, true)
-
-	existingCount := 0
-	for _, t := range tracked {
-		if t.Existing != nil {
-			existingCount++
-		}
-	}
-
-	autoTracked := []string{}
-	autoScored := 0
-	if len(plan.AutoTrack) > 0 {
-		names := make([]string, 0, len(plan.AutoTrack))
-		for _, e := range plan.AutoTrack {
-			names = append(names, e.Name)
-		}
-		created, ids, err := helpers.TrackCharacters(db.DB, tenant, names)
-		if err != nil {
-			log.Println("submitScores: auto-track failed:", err)
-			r.Edit("Score submission failed while tracking new characters - no scores were written. See server logs for details.")
-			return
-		}
-		autoTracked = created
-		for _, e := range plan.AutoTrack {
-			id, ok := ids[e.Name]
-			if !ok {
-				log.Println("submitScores: auto-tracked character has no id:", e.Name)
-				continue
-			}
-			plan.Changes = append(plan.Changes, helpers.ScoreChange{CharacterID: id, Score: e.Score})
-			autoScored++
-		}
-	}
-
-	if err := helpers.UpsertCulvertScores(db.DB, week, plan.Changes); err != nil {
-		log.Println("submitScores: upsert failed:", err)
-		r.Edit("Score submission failed while writing to the database - no scores were written. See server logs for details.")
+	tx, err := db.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		r.Edit("Score submission failed - no scores were written.")
 		return
 	}
+	defer tx.Rollback()
+	if err := LockSubmissionTenant(context.Background(), tx, tenant); err != nil {
+		r.Edit("Score submission failed - no scores were written.")
+		return
+	}
+	result, err := ApplyScoreSubmission(context.Background(), tx, tenant, week, submitted, ids, rankingsLookup(tenant))
+	if err != nil {
+		log.Println("submitScores: shared apply failed:", err)
+		r.Edit("Score submission failed - no scores were written.")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		r.Edit("Score submission outcome is uncertain; check the recorded scores before retrying.")
+		return
+	}
+	plan, autoTracked, unverified := result.Plan, result.AutoTracked, result.Unverified
 
 	// Receipt embed: inline stat tiles (recorded + coverage) and one labeled
 	// field per name list, matching the weekly grid. Contextual notes
 	// (unverified spellings, announcement status, warnings) go in the
 	// description. Long lists are trimmed with capList to stay under the limit.
-	scoredAfter := existingCount + len(plan.NewNames) + autoScored
-	totalTracked := len(tracked) + len(autoTracked)
+	scoredAfter := result.ScoredAfter
+	totalTracked := result.TotalTracked
 	fields := []*discordgo.MessageEmbedField{
 		{Name: "Recorded", Value: fmt.Sprintf("**%d** score(s)", len(plan.Changes)), Inline: true},
 		{Name: "Coverage", Value: fmt.Sprintf("%d of %d tracked", scoredAfter, totalTracked), Inline: true},
@@ -172,7 +109,7 @@ func finalizeSubmitScores(s *discordgo.Session, r *reply, i *discordgo.Interacti
 		desc.WriteString(archiveStatusLine(apihelpers.ArchiveWeekScreenshots(s, db.DB, apiredis.RedisDB, tenant, week, pages)))
 	}
 	desc.WriteString(parseWarnings)
-	desc.WriteString(rosterMeta.StalenessWarning())
+	desc.WriteString(rosterWarning)
 
 	r.EditData(&discordgo.InteractionResponseData{
 		Embeds: []*discordgo.MessageEmbed{{

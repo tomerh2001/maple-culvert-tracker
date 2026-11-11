@@ -34,7 +34,9 @@ func SplitNameList(raw string) []string {
 // that tenant (ON CONFLICT DO NOTHING). It returns the names actually created
 // (in input order) and a map of name -> character id covering every input
 // name that exists afterwards.
-func TrackCharacters(dbc *sql.DB, tenantID string, names []string) (created []string, ids map[string]int64, err error) {
+type CharacterTracker interface{ QueryRow(string, ...any) *sql.Row }
+
+func TrackCharacters(dbc CharacterTracker, tenantID string, names []string) (created []string, ids map[string]int64, err error) {
 	created = []string{}
 	ids = make(map[string]int64, len(names))
 	for _, name := range names {

@@ -94,6 +94,19 @@ Go 1.26.5+; `go test ./...` runs the OCR suite against real fixture screenshots 
 - Command replies are text-only and ephemeral by default. Exactly two replies attach an image: the `/culvert` chart, and the **Submit Scores** OCR failure help, which explains the screenshot requirements and attaches an example screenshot.
 - Week keys stay Wednesday dates, but the current week is computed from the true reset instant (Thursday 00:00 UTC).
 
+## Automated image submissions
+
+The optional [image submission API](docs/image-submission-api.md) reuses the
+Discord command's image validation and score service. A complete bounded PNG
+batch, score changes, receipt and delivery intent commit atomically. Scoped
+server credentials, durable replay checks and manual-correction timestamps
+protect tenant isolation and later edits. The integration is disabled without
+explicit grants; ordinary Discord submissions still work.
+
+No native capture, schedule, deployment or production grant is enabled by this
+change. Grayscale guild-page readability and complete native pagination need
+real fixture qualification before a collector is admitted.
+
 ## License
 
 MIT, same as upstream. Original work © Azuri (SLAzurin).

@@ -149,23 +149,30 @@ func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores m
 		}
 		return nil, "", false
 	}
+	pages, warnings, err = submissionImagesResult(oc, scores)
+	if err != nil {
+		r.Edit(err.Error())
+		return nil, "", false
+	}
+	return pages, warnings, true
+}
+
+// submissionImagesResult contains the shared semantic gates, with no Discord I/O.
+func submissionImagesResult(oc *ocrOutcome, scores map[string]int) (pages []apihelpers.ScreenshotPage, warnings string, err error) {
 	// Submission safety gates: an incomplete (time-limited) or internally
 	// conflicting parse must never be written to the database.
 	if oc.truncated {
-		r.Edit("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again, or crop the screenshot to the Member Participation Status window and resubmit.")
-		return nil, "", false
+		return nil, "", errors.New("Nothing submitted: the parse hit its time limit - results may be incomplete. Try again, or crop the screenshot to the Member Participation Status window and resubmit.")
 	}
 	if len(oc.conflicts) > 0 {
-		r.Edit("Nothing submitted: the images disagree on some characters' scores:\n- " +
+		return nil, "", errors.New("Nothing submitted: the images disagree on some characters' scores:\n- " +
 			strings.Join(capList(oc.conflicts, 10), "\n- ") +
 			"\nRetake the overlapping screenshots and resubmit, or fix individual scores with `/set-culvert`.")
-		return nil, "", false
 	}
 	if idx := firstDescendingViolation(oc.merged); idx >= 0 {
-		r.Edit("Nothing submitted: parsed scores are not in descending order (`" +
+		return nil, "", errors.New("Nothing submitted: parsed scores are not in descending order (`" +
 			oc.merged[idx-1].Name + "` -> `" + oc.merged[idx].Name +
 			"`), which usually means an OCR misread. Retake the screenshot and resubmit, or fix individual scores with `/set-culvert`.")
-		return nil, "", false
 	}
 	// Names the game truncated with an ellipsis are recorded AS DECODED: an
 	// incomplete name beats a dropped score (owner decision). The receipt
@@ -199,5 +206,5 @@ func scoresFromImageURLs(r *reply, tenantID string, imageURLs []string, scores m
 			strings.Join(capList(ambiguousRecorded, 10), "; ") +
 			" - recorded as shown; set the right one with `/set-culvert`."
 	}
-	return oc.pages, warnings, true
+	return oc.pages, warnings, nil
 }

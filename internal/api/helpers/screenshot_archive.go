@@ -177,7 +177,7 @@ func PlanArchiveMerge(existing [][]string, incoming [][]string) []int {
 // message for the week) gets its own message. nil = archived everywhere
 // applicable, ErrNoScreenshotChannel = skipped by configuration, anything
 // else = failed (details logged).
-func ArchiveWeekScreenshots(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID string, week time.Time, pages []ScreenshotPage) (err error) {
+func ArchiveWeekScreenshots(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID string, week time.Time, pages []ScreenshotPage, options ...discordgo.RequestOption) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Println("ArchiveWeekScreenshots: recovered from panic:", r)
@@ -195,12 +195,12 @@ func ArchiveWeekScreenshots(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client
 	}
 	weekStr := cmdhelpers.GetCulvertResetDate(week).Format(time.DateOnly)
 
-	inGuild := func(gid string) bool {
-		if g, gerr := s.State.Guild(gid); gerr == nil && g != nil {
-			return true
+	inGuild := func(gid string) error {
+		if g, err := s.State.Guild(gid); err == nil && g != nil {
+			return nil
 		}
-		_, gerr := s.Guild(gid)
-		return gerr == nil
+		_, err := s.Guild(gid, options...)
+		return err
 	}
 	anyConfigured := false
 	var firstErr error
@@ -212,18 +212,17 @@ func ArchiveWeekScreenshots(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client
 		if channelID == "" && !archiveRowExists(dbc, gid, weekStr) {
 			continue
 		}
-		if !inGuild(gid) {
-			continue // shared guild pending an invite - archives once joined
+		if err := inGuild(gid); err != nil {
+			firstErr = errors.Join(firstErr, err)
+			continue
 		}
 		anyConfigured = true
-		if uerr := upsertGuildScreenshotArchive(s, dbc, gid, channelID, weekStr, pages); uerr != nil {
+		if uerr := upsertGuildScreenshotArchive(s, dbc, gid, channelID, weekStr, pages, options...); uerr != nil {
 			log.Println("ArchiveWeekScreenshots: guild", gid, uerr)
-			if firstErr == nil {
-				firstErr = uerr
-			}
+			firstErr = errors.Join(firstErr, uerr)
 		}
 	}
-	if !anyConfigured {
+	if !anyConfigured && firstErr == nil {
 		return ErrNoScreenshotChannel
 	}
 	return firstErr
@@ -313,7 +312,7 @@ type archivePartUpdate struct {
 // retains at most twenty pages, then updates each affected Discord message.
 // Each successful part is saved independently; a failed part keeps its prior
 // database references and is reported to the submitter.
-func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, channelID, weekStr string, pages []ScreenshotPage) error {
+func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, channelID, weekStr string, pages []ScreenshotPage, options ...discordgo.RequestOption) error {
 	if len(pages) > maxArchivePages {
 		return fmt.Errorf("a screenshot submission exceeds the %d-page archive limit", maxArchivePages)
 	}
@@ -410,14 +409,14 @@ func upsertGuildScreenshotArchive(s *discordgo.Session, dbc *sql.DB, guildID, ch
 		if len(part.pages) == 0 && len(part.dropped) == 0 {
 			continue
 		}
-		if err := upsertGuildScreenshotArchivePart(s, dbc, guildID, channelID, weekStr, part); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("archive part %d: %w", part.part+1, err)
+		if err := upsertGuildScreenshotArchivePart(s, dbc, guildID, channelID, weekStr, part, options...); err != nil {
+			firstErr = errors.Join(firstErr, fmt.Errorf("archive part %d: %w", part.part+1, err))
 		}
 	}
 	return firstErr
 }
 
-func upsertGuildScreenshotArchivePart(s *discordgo.Session, dbc *sql.DB, guildID, channelID, weekStr string, part archivePartUpdate) error {
+func upsertGuildScreenshotArchivePart(s *discordgo.Session, dbc *sql.DB, guildID, channelID, weekStr string, part archivePartUpdate, options ...discordgo.RequestOption) (resultErr error) {
 	files := make([]*discordgo.File, len(part.pages))
 	uploadNames := make([]string, len(part.pages))
 	for i, p := range part.pages {
@@ -431,7 +430,7 @@ func upsertGuildScreenshotArchivePart(s *discordgo.Session, dbc *sql.DB, guildID
 	var msg *discordgo.Message
 	var err error
 	if part.messageID != "" {
-		msg, err = editScreenshotArchive(s, part.channelID, part.messageID, content, part.survivors, files)
+		msg, err = editScreenshotArchive(s, part.channelID, part.messageID, content, part.survivors, files, options...)
 		if err != nil {
 			if !isUnknownArchiveMessage(err) {
 				return fmt.Errorf("updating the screenshot archive message failed: %w", err)
@@ -457,7 +456,7 @@ func upsertGuildScreenshotArchivePart(s *discordgo.Session, dbc *sql.DB, guildID
 		}
 	}
 	if part.messageID == "" {
-		msg, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: content, Files: files})
+		msg, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: content, Files: files}, options...)
 		if err != nil {
 			return fmt.Errorf("posting the screenshot archive message failed: %w", err)
 		}
@@ -466,6 +465,11 @@ func upsertGuildScreenshotArchivePart(s *discordgo.Session, dbc *sql.DB, guildID
 	if msg == nil {
 		return errors.New("Discord returned no screenshot archive message")
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = &DeliveryArtifactError{Cause: resultErr, Messages: []MessageReference{{GuildID: guildID, ChannelID: part.channelID, MessageID: msg.ID}}}
+		}
+	}()
 	// Validate every upload before persisting the returned message and page
 	// identities. Database failures must reach the receipt, never claim success.
 	newAttachmentIDs := make(map[string]string)
@@ -503,10 +507,10 @@ func upsertGuildScreenshotArchivePart(s *discordgo.Session, dbc *sql.DB, guildID
 // editScreenshotArchive keeps the original metadata for surviving attachments.
 // discordgo serializes Filename even when it is empty, so ID-only attachments
 // produce invalid filename fields in the edit payload (including new uploads).
-func editScreenshotArchive(s *discordgo.Session, channelID, messageID, content string, survivors []storedArchivePage, files []*discordgo.File) (*discordgo.Message, error) {
+func editScreenshotArchive(s *discordgo.Session, channelID, messageID, content string, survivors []storedArchivePage, files []*discordgo.File, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	keep := make([]*discordgo.MessageAttachment, 0, len(survivors)+len(files))
 	if len(survivors) > 0 {
-		current, err := s.ChannelMessage(channelID, messageID)
+		current, err := s.ChannelMessage(channelID, messageID, options...)
 		if err != nil {
 			return nil, err
 		}
@@ -533,7 +537,7 @@ func editScreenshotArchive(s *discordgo.Session, channelID, messageID, content s
 		Content:     &content,
 		Attachments: &keep,
 		Files:       files,
-	})
+	}, options...)
 }
 
 func isUnknownArchiveMessage(err error) bool {

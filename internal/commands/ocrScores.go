@@ -43,6 +43,28 @@ type ocrOutcome struct {
 // ocrImagesToScores downloads and OCRs GPQ score images. A non-nil error is
 // safe to display to the user.
 func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error) {
+	if len(imageURLs) == 0 || len(imageURLs) > 20 {
+		return nil, errScreenshotUnusable{errors.New("A submission must contain 1 to 20 images.")}
+	}
+	images := make([][]byte, len(imageURLs))
+	total := 0
+	for i, url := range imageURLs {
+		b, err := downloadBytes(url)
+		if err != nil {
+			return nil, errScreenshotUnusable{errors.New("Failed to download an image.")}
+		}
+		total += len(b)
+		if total > 64<<20 {
+			return nil, errScreenshotUnusable{errors.New("Combined images exceed 64 MiB.")}
+		}
+		images[i] = b
+	}
+	return ocrBytesToScores(tenantID, images)
+}
+
+// ocrBytesToScores is shared by Discord downloads and authenticated native uploads.
+// It never fetches caller-supplied URLs and preserves original image bytes.
+func ocrBytesToScores(tenantID string, images [][]byte) (*ocrOutcome, error) {
 	font, err := helpers.LoadGPQFont()
 	if err != nil {
 		log.Println("ocrImagesToScores: failed to load font templates:", err)
@@ -65,19 +87,19 @@ func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error)
 		data []byte
 		err  error
 	}
-	results := make([]imgResult, len(imageURLs))
+	results := make([]imgResult, len(images))
+	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
-	for idx, url := range imageURLs {
+	for idx, data := range images {
 		wg.Add(1)
-		go func(idx int, url string) {
+		go func(idx int, data []byte) {
 			defer wg.Done()
-			data, err := downloadBytes(url)
-			if err != nil {
-				results[idx] = imgResult{err: err}
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+			if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > 8192 || cfg.Height > 8192 || int64(cfg.Width)*int64(cfg.Height) > 24_000_000 {
+				results[idx] = imgResult{err: errors.New("Invalid or oversized image dimensions.")}
 				return
-			}
-			if cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data)); cerr == nil {
-				log.Printf("ocrImagesToScores: image %dx%d (%d KB) %s", cfg.Width, cfg.Height, len(data)/1024, url)
 			}
 			start := time.Now()
 			res, err := helpers.ParseParticipation(data, memberNames, font)
@@ -86,7 +108,7 @@ func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error)
 					len(res.Rows), time.Since(start).Round(time.Millisecond), res.Engine, res.Scale, res.Truncated)
 			}
 			results[idx] = imgResult{res: res, data: data, err: err}
-		}(idx, url)
+		}(idx, data)
 	}
 	wg.Wait()
 
@@ -94,7 +116,7 @@ func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error)
 	mergedPos := map[string]int{}
 	for idx, r := range results {
 		if r.err != nil {
-			log.Println("ocrImagesToScores: failed to process image", imageURLs[idx], r.err)
+			log.Println("ocrImagesToScores: failed to process image", idx+1, r.err)
 			// Screenshot-fixable failures are marked errScreenshotUnusable so
 			// the caller replies with the requirements + example screenshot.
 			if errors.Is(r.err, helpers.ErrCulvertWindowNotFound) {
@@ -104,7 +126,7 @@ func ocrImagesToScores(tenantID string, imageURLs []string) (*ocrOutcome, error)
 		}
 		out.truncated = out.truncated || r.res.Truncated
 		for _, d := range r.res.Defects {
-			if len(imageURLs) > 1 {
+			if len(images) > 1 {
 				d = fmt.Sprintf("image %d: %s", idx+1, d)
 			}
 			out.defects = append(out.defects, d)
@@ -212,5 +234,9 @@ func downloadBytes(url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to download %s: status %d", url, resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (32<<20)+1))
+	if len(body) > 32<<20 {
+		return nil, errors.New("attachment exceeds 32 MiB")
+	}
+	return body, err
 }
