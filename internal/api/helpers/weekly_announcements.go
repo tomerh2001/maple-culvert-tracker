@@ -40,7 +40,7 @@ var ErrNoWeeklyChannel = errors.New("no weekly channel configured")
 // The returned error tells the caller whether the announcement went out:
 // nil = message (and thread note) updated, ErrNoWeeklyChannel = skipped by
 // configuration, anything else = failed (details logged).
-func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID string, week time.Time, changedIDs []int64) (err error) {
+func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID string, week time.Time, changedIDs []int64, options ...discordgo.RequestOption) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Println("AnnounceSubmission: recovered from panic:", r)
@@ -63,7 +63,7 @@ func AnnounceSubmission(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, te
 	// changedIDs is retained for API compatibility; the note now reflects the
 	// week's full personal-best state rather than one submission's delta.
 	_ = changedIDs
-	return fanOutWeekly(s, dbc, rdb, tenantID, art, false)
+	return fanOutWeekly(s, dbc, rdb, tenantID, art, false, options...)
 }
 
 // weeklyArtifacts is the shared render of one week's data, computed once from
@@ -114,13 +114,13 @@ func buildWeeklyArtifacts(dbc *sql.DB, rdb *redis.Client, tenantID string, week 
 // edits guilds that already have a message - a non-submission refresh must
 // never CREATE a new post anywhere. Returns ErrNoWeeklyChannel only when no
 // guild in the tenant announces at all.
-func fanOutWeekly(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID string, art weeklyArtifacts, requireExisting bool) error {
-	inGuild := func(gid string) bool {
+func fanOutWeekly(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID string, art weeklyArtifacts, requireExisting bool, options ...discordgo.RequestOption) error {
+	inGuild := func(gid string) error {
 		if g, err := s.State.Guild(gid); err == nil && g != nil {
-			return true
+			return nil
 		}
-		_, err := s.Guild(gid)
-		return err == nil
+		_, err := s.Guild(gid, options...)
+		return err
 	}
 	anyConfigured := false
 	var firstErr error
@@ -132,21 +132,18 @@ func fanOutWeekly(s *discordgo.Session, dbc *sql.DB, rdb *redis.Client, tenantID
 		if channelID == "" && !weeklyRowExists(dbc, gid, art.weekStr) {
 			continue
 		}
-		// A shared guild the bot has not joined yet: its channel is configured
-		// but unreachable - skip quietly (it announces once the bot is invited)
-		// rather than surface a per-submission failure.
-		if !inGuild(gid) {
+		// A failed membership read does not prove a configured destination is absent.
+		if err := inGuild(gid); err != nil {
+			firstErr = errors.Join(firstErr, err)
 			continue
 		}
 		anyConfigured = true
-		if _, err := upsertWeeklyArtifacts(s, dbc, gid, channelID, art, requireExisting); err != nil {
+		if _, err := upsertWeeklyArtifacts(s, dbc, gid, channelID, art, requireExisting, options...); err != nil {
 			log.Println("fanOutWeekly: guild", gid, err)
-			if firstErr == nil {
-				firstErr = err
-			}
+			firstErr = errors.Join(firstErr, err)
 		}
 	}
-	if !anyConfigured {
+	if !anyConfigured && firstErr == nil {
 		return ErrNoWeeklyChannel
 	}
 	return firstErr
@@ -405,8 +402,8 @@ func WeekTableEmbed(dbc *sql.DB, rdb *redis.Client, tenantID, title string, week
 // consolidated artifacts message INSIDE the thread (the thread's first bot
 // comment carrying the table + personal-best embeds, edited in place
 // afterwards). It returns the thread id ("" when the summary went out but the
-// thread could not be created). A non-nil error means the summary message
-// itself could not be created or updated.
+// thread could not be created). A non-nil error means some artifact or its durable identifier was not
+// confirmed; callers must retain that partial outcome.
 //
 // requireExisting makes a missing announcement record a silent no-op (used by
 // refreshes: registering a character must never CREATE a weekly post).
@@ -415,7 +412,7 @@ func WeekTableEmbed(dbc *sql.DB, rdb *redis.Client, tenantID, title string, week
 // shared tenant keeps its own message); channelID is that server's configured
 // weekly channel (used only when creating a fresh post - edits reuse the
 // stored channel).
-func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID string, art weeklyArtifacts, requireExisting bool) (string, error) {
+func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID string, art weeklyArtifacts, requireExisting bool, options ...discordgo.RequestOption) (string, error) {
 	weekStr := art.weekStr
 	// note_message_id is no longer written (the thread is consolidated onto one
 	// message keyed by table_message_id); the column is left in place.
@@ -442,7 +439,7 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID
 		}
 		// Drop any table file attached by the pre-thread-table layout.
 		summaryEdit.Attachments = &[]*discordgo.MessageAttachment{}
-		_, editErr := s.ChannelMessageEditComplex(summaryEdit)
+		_, editErr := s.ChannelMessageEditComplex(summaryEdit, options...)
 		if editErr == nil {
 			if storedThread == "" {
 				// Self-heal: an earlier run posted the message but failed to
@@ -450,19 +447,23 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID
 				if thread, terr := s.MessageThreadStartComplex(storedChannel, storedMessage, &discordgo.ThreadStart{
 					Name:                "Culvert " + weekStr,
 					AutoArchiveDuration: 10080,
-				}); terr != nil {
+				}, options...); terr != nil {
 					log.Println("weekly artifacts: thread self-heal failed:", terr)
+					return storedThread, terr
 				} else {
 					storedThread = thread.ID
 					if _, uerr := dbc.Exec(
 						`UPDATE weekly_announcements SET thread_id = $1 WHERE guild_id = $2 AND culvert_date = $3`,
 						storedThread, guildID, weekStr); uerr != nil {
 						log.Println("weekly artifacts: store healed thread id:", uerr)
+						return storedThread, &DeliveryArtifactError{Cause: uerr, Messages: []MessageReference{{GuildID: guildID, ChannelID: storedChannel, MessageID: storedMessage, ThreadID: storedThread}}}
 					}
 				}
 			}
 			if storedThread != "" {
-				upsertThreadArtifacts(s, dbc, guildID, weekStr, storedThread, storedTableMsg, art.tableEmbed, art.pbEmbed)
+				if err := upsertThreadArtifacts(s, dbc, guildID, weekStr, storedThread, storedTableMsg, art.tableEmbed, art.pbEmbed, options...); err != nil {
+					return storedThread, err
+				}
 			}
 			return storedThread, nil
 		}
@@ -494,18 +495,18 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID
 	}
 	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{art.summaryEmbed},
-	})
+	}, options...)
 	if err != nil {
 		log.Println("weekly artifacts: send weekly message:", err)
 		return "", errors.New("posting the weekly message failed - check the bot's permissions in the weekly channel")
 	}
 	threadID := ""
-	thread, err := s.MessageThreadStartComplex(channelID, msg.ID, &discordgo.ThreadStart{
+	thread, threadErr := s.MessageThreadStartComplex(channelID, msg.ID, &discordgo.ThreadStart{
 		Name:                "Culvert " + weekStr,
 		AutoArchiveDuration: 10080,
-	})
-	if err != nil {
-		log.Println("weekly artifacts: start thread:", err)
+	}, options...)
+	if threadErr != nil {
+		log.Println("weekly artifacts: start thread:", threadErr)
 	} else {
 		threadID = thread.ID
 	}
@@ -513,47 +514,45 @@ func upsertWeeklyArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, channelID
 		`INSERT INTO weekly_announcements (guild_id, culvert_date, channel_id, message_id, thread_id) VALUES ($1, $2, $3, $4, $5)`,
 		guildID, weekStr, channelID, msg.ID, threadID); err != nil {
 		log.Println("weekly artifacts: insert weekly_announcements:", err)
+		return threadID, &DeliveryArtifactError{Cause: err, Messages: []MessageReference{{GuildID: guildID, ChannelID: channelID, MessageID: msg.ID, ThreadID: threadID}}}
+	}
+	if threadErr != nil {
+		return threadID, threadErr
 	}
 	if threadID != "" {
 		// One consolidated message (table + PB embeds) is the thread's first
 		// bot comment.
-		upsertThreadArtifacts(s, dbc, guildID, weekStr, threadID, "", art.tableEmbed, art.pbEmbed)
+		if err := upsertThreadArtifacts(s, dbc, guildID, weekStr, threadID, "", art.tableEmbed, art.pbEmbed, options...); err != nil {
+			return threadID, err
+		}
 	}
 	return threadID, nil
 }
 
-// upsertThreadArtifacts edits the week's single consolidated thread message -
-// carrying the full-table embed and the personal-best embed together - or
-// posts it (recording its id in table_message_id) when it does not exist yet
-// or its stored id is unreachable. One message per week, edited in place.
-// Failures are logged, never fatal: the content is derived data and the next
-// refresh retries.
-func upsertThreadArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, weekStr, threadID, tableMsgID string, tableEmbed, pbEmbed *discordgo.MessageEmbed) {
+// upsertThreadArtifacts replaces a stored message only after explicit
+// UnknownMessage. Uncertain edit failures preserve its identity.
+func upsertThreadArtifacts(s *discordgo.Session, dbc *sql.DB, guildID, weekStr, threadID, tableMsgID string, tableEmbed, pbEmbed *discordgo.MessageEmbed, options ...discordgo.RequestOption) error {
 	embeds := []*discordgo.MessageEmbed{tableEmbed, pbEmbed}
 	if tableMsgID != "" {
 		empty := ""
-		edit := &discordgo.MessageEdit{
-			Channel: threadID,
-			ID:      tableMsgID,
-			Content: &empty, // clears any pre-embed content / the old note message
-			Embeds:  &embeds,
+		edit := &discordgo.MessageEdit{Channel: threadID, ID: tableMsgID, Content: &empty, Embeds: &embeds, Attachments: &[]*discordgo.MessageAttachment{}}
+		_, err := s.ChannelMessageEditComplex(edit, options...)
+		if err == nil {
+			return nil
 		}
-		edit.Attachments = &[]*discordgo.MessageAttachment{}
-		if _, err := s.ChannelMessageEditComplex(edit); err == nil {
-			return
+		var restErr *discordgo.RESTError
+		if !errors.As(err, &restErr) || restErr.Message == nil || restErr.Message.Code != discordgo.ErrCodeUnknownMessage {
+			return err
 		}
-		log.Println("weekly artifacts: thread message unreachable, reposting")
 	}
-	msg, err := s.ChannelMessageSendComplex(threadID, &discordgo.MessageSend{Embeds: embeds})
+	msg, err := s.ChannelMessageSendComplex(threadID, &discordgo.MessageSend{Embeds: embeds}, options...)
 	if err != nil {
-		log.Println("weekly artifacts: post thread artifacts:", err)
-		return
+		return err
 	}
-	if _, err := dbc.Exec(
-		`UPDATE weekly_announcements SET table_message_id = $1 WHERE guild_id = $2 AND culvert_date = $3`,
-		msg.ID, guildID, weekStr); err != nil {
-		log.Println("weekly artifacts: store thread message id:", err)
+	if _, err = dbc.Exec("UPDATE weekly_announcements SET table_message_id=$1 WHERE guild_id=$2 AND culvert_date=$3", msg.ID, guildID, weekStr); err != nil {
+		return &DeliveryArtifactError{Cause: err, Messages: []MessageReference{{GuildID: guildID, ChannelID: threadID, MessageID: msg.ID}}}
 	}
+	return nil
 }
 
 // buildWeekPBEmbed renders the week's personal-best embed, edited in place on
